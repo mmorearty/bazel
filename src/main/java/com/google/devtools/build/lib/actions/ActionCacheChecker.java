@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Arrays;
 
 import javax.annotation.Nullable;
 
@@ -101,16 +102,30 @@ public class ActionCacheChecker {
    *
    * @return true if at least one artifact has changed, false - otherwise.
    */
-  private boolean validateArtifacts(Entry entry, Action action,
+  private boolean validateArtifacts(EventHandler handler, Entry entry, Action action,
       Iterable<Artifact> actionInputs, MetadataHandler metadataHandler, boolean checkOutput) {
+	reportMike(handler, "----------------- validateArtifacts ----------------");
+
     Iterable<Artifact> artifacts = checkOutput
         ? Iterables.concat(action.getOutputs(), actionInputs)
         : actionInputs;
     Map<String, Metadata> mdMap = new HashMap<>();
+    int i=0;
     for (Artifact artifact : artifacts) {
-      mdMap.put(artifact.getExecPathString(), metadataHandler.getMetadataMaybe(artifact));
+      i++;
+	  Metadata m = metadataHandler.getMetadataMaybe(artifact);
+      reportMike(handler, "artifact: " + artifact.getExecPathString() + " " + Arrays.hashCode(m.digest));
+      mdMap.put(artifact.getExecPathString(), m);
     }
     return !Digest.fromMetadata(mdMap).equals(entry.getFileDigest());
+  }
+
+  private void reportMike(EventHandler handler, String s) {
+    if (handler != null) {
+      handler.handle(new Event(EventKind.DEPCHECKER, null, "Mike says: " + s));
+    } else {
+      System.err.println("Mike says: handler is null");
+    }
   }
 
   private void reportCommand(EventHandler handler, Action action) {
@@ -199,7 +214,7 @@ public class ActionCacheChecker {
     if (entry.isCorrupted()) {
       reportCorruptedCacheEntry(handler, action);
       return true; // cache entry is corrupted - must execute
-    } else if (validateArtifacts(entry, action, actionInputs, metadataHandler, true)) {
+    } else if (validateArtifacts(handler, entry, action, actionInputs, metadataHandler, true)) {
       reportChanged(handler, action);
       return true; // files have changed
     } else if (!entry.getActionKey().equals(action.getKey())){
@@ -285,7 +300,7 @@ public class ActionCacheChecker {
       if (entry.isCorrupted()) {
         reportCorruptedCacheEntry(handler, action);
         changed = true;
-      } else if (validateArtifacts(entry, action, action.getInputs(), metadataHandler, false)) {
+      } else if (validateArtifacts(handler, entry, action, action.getInputs(), metadataHandler, false)) {
         reportChanged(handler, action);
         changed = true;
       }
