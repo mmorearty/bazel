@@ -28,6 +28,8 @@ import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.EventKind;
 import com.google.devtools.build.lib.vfs.PathFragment;
 
+import java.io.FileWriter;
+import java.io.BufferedWriter;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -113,18 +115,25 @@ public class ActionCacheChecker {
     int i=0;
     for (Artifact artifact : artifacts) {
       i++;
-	  Metadata m = metadataHandler.getMetadataMaybe(artifact);
-      reportMike(handler, "artifact: " + artifact.getExecPathString() + " " + Arrays.hashCode(m.digest));
+      Metadata m = metadataHandler.getMetadataMaybe(artifact);
+      reportMike(handler, "artifact: " + artifact.getExecPathString() + " " + ((m == null) ? 0 : Arrays.hashCode(m.digest)));
       mdMap.put(artifact.getExecPathString(), m);
     }
     return !Digest.fromMetadata(mdMap).equals(entry.getFileDigest());
   }
 
+  private static BufferedWriter mikeOut = null;
   private void reportMike(EventHandler handler, String s) {
-    if (handler != null) {
-      handler.handle(new Event(EventKind.DEPCHECKER, null, "Mike says: " + s));
-    } else {
-      System.err.println("Mike says: handler is null");
+    try {
+      if (mikeOut == null) {
+        String home = System.getenv("HOME");
+        FileWriter fstream = new FileWriter(home + "/explain", false);
+        mikeOut = new BufferedWriter(fstream);
+      }
+      mikeOut.write("Mike says: " + s + "\n");
+      mikeOut.flush();
+    } catch (IOException e) {
+      System.err.println("Error: " + e.getMessage());
     }
   }
 
