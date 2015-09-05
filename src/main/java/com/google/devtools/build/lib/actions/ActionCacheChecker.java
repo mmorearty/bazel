@@ -106,7 +106,7 @@ public class ActionCacheChecker {
    */
   private boolean validateArtifacts(EventHandler handler, Entry entry, Action action,
       Iterable<Artifact> actionInputs, MetadataHandler metadataHandler, boolean checkOutput) {
-	reportMike("----------------- validateArtifacts ----------------");
+	reportMike("----------------- validateArtifacts " + action.prettyPrint() + " ----------------");
 
     Iterable<Artifact> artifacts = checkOutput
         ? Iterables.concat(action.getOutputs(), actionInputs)
