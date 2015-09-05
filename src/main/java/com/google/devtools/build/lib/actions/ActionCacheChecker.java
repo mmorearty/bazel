@@ -106,7 +106,7 @@ public class ActionCacheChecker {
    */
   private boolean validateArtifacts(EventHandler handler, Entry entry, Action action,
       Iterable<Artifact> actionInputs, MetadataHandler metadataHandler, boolean checkOutput) {
-	reportMike(handler, "----------------- validateArtifacts ----------------");
+	reportMike("----------------- validateArtifacts ----------------");
 
     Iterable<Artifact> artifacts = checkOutput
         ? Iterables.concat(action.getOutputs(), actionInputs)
@@ -116,18 +116,18 @@ public class ActionCacheChecker {
     for (Artifact artifact : artifacts) {
       i++;
       Metadata m = metadataHandler.getMetadataMaybe(artifact);
-      reportMike(handler, "artifact: " + artifact.getExecPathString() + " " + ((m == null) ? 0 : Arrays.hashCode(m.digest)));
+      reportMike("artifact: " + artifact.getExecPathString() + " " + ((m == null) ? 0 : Arrays.hashCode(m.digest)));
       mdMap.put(artifact.getExecPathString(), m);
     }
     return !Digest.fromMetadata(mdMap).equals(entry.getFileDigest());
   }
 
   private static BufferedWriter mikeOut = null;
-  private void reportMike(EventHandler handler, String s) {
+  private void reportMike(String s) {
     try {
       if (mikeOut == null) {
         String home = System.getenv("HOME");
-        FileWriter fstream = new FileWriter(home + "/explain", false);
+        FileWriter fstream = new FileWriter(home + "/mike", false);
         mikeOut = new BufferedWriter(fstream);
       }
       mikeOut.write("Mike says: " + s + "\n");
