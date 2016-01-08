@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,18 +14,23 @@
 package com.google.devtools.build.lib.analysis;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Verify;
 import com.google.common.collect.ImmutableMap;
 import com.google.devtools.build.lib.analysis.config.ConfigMatchingProvider;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.AbstractAttributeMapper;
 import com.google.devtools.build.lib.packages.AttributeMap;
+import com.google.devtools.build.lib.packages.BuildType;
+import com.google.devtools.build.lib.packages.BuildType.Selector;
+import com.google.devtools.build.lib.packages.BuildType.SelectorList;
 import com.google.devtools.build.lib.packages.Rule;
-import com.google.devtools.build.lib.packages.Type;
 import com.google.devtools.build.lib.syntax.EvalException;
-import com.google.devtools.build.lib.syntax.Label;
+import com.google.devtools.build.lib.syntax.Type;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -101,32 +106,34 @@ public class ConfiguredAttributeMapper extends AbstractAttributeMapper {
    * can't be resolved due to intrinsic contradictions in the configuration.
    */
   private <T> T getAndValidate(String attributeName, Type<T> type) throws EvalException  {
-    Type.SelectorList<T> selectorList = getSelectorList(attributeName, type);
+    SelectorList<T> selectorList = getSelectorList(attributeName, type);
     if (selectorList == null) {
       // This is a normal attribute.
       return super.get(attributeName, type);
     }
 
     List<T> resolvedList = new ArrayList<>();
-    for (Type.Selector<T> selector : selectorList.getSelectors()) {
+    for (Selector<T> selector : selectorList.getSelectors()) {
       resolvedList.add(resolveSelector(attributeName, selector));
     }
     return resolvedList.size() == 1 ? resolvedList.get(0) : type.concat(resolvedList);
   }
 
-  private <T> T resolveSelector(String attributeName, Type.Selector<T> selector)
+  private <T> T resolveSelector(String attributeName, Selector<T> selector)
       throws EvalException {
     ConfigMatchingProvider matchingCondition = null;
+    Set<Label> conditionLabels = new LinkedHashSet<>();
     T matchingValue = null;
 
     // Find the matching condition and record its value (checking for duplicates).
     for (Map.Entry<Label, T> entry : selector.getEntries().entrySet()) {
       Label selectorKey = entry.getKey();
-      if (Type.Selector.isReservedLabel(selectorKey)) {
+      if (BuildType.Selector.isReservedLabel(selectorKey)) {
         continue;
       }
 
       ConfigMatchingProvider curCondition = Verify.verifyNotNull(configConditions.get(selectorKey));
+      conditionLabels.add(curCondition.label());
 
       if (curCondition.matches()) {
         if (matchingCondition == null || curCondition.refines(matchingCondition)) {
@@ -151,7 +158,8 @@ public class ConfiguredAttributeMapper extends AbstractAttributeMapper {
       if (!selector.hasDefault()) {
         throw new EvalException(rule.getAttributeLocation(attributeName),
             "Configurable attribute \"" + attributeName + "\" doesn't match this "
-            + "configuration (would a default condition help?)");
+            + "configuration (would a default condition help?).\nConditions checked:\n "
+            + Joiner.on("\n ").join(conditionLabels));
       }
       matchingValue = selector.getDefault();
     }

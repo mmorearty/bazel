@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,14 +13,12 @@
 // limitations under the License.
 package com.google.devtools.build.lib.query2.engine;
 
+import com.google.common.base.Predicate;
+import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.Argument;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.ArgumentType;
-import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryFunction;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -32,9 +30,8 @@ import java.util.Set;
  * <pre>expr ::= RDEPS '(' expr ',' expr ')'</pre>
  * <pre>       | RDEPS '(' expr ',' expr ',' WORD ')'</pre>
  */
-final class RdepsFunction implements QueryFunction {
-  RdepsFunction() {
-  }
+final class RdepsFunction extends AllRdepsFunction {
+  RdepsFunction() {}
 
   @Override
   public String getName() {
@@ -43,13 +40,13 @@ final class RdepsFunction implements QueryFunction {
 
   @Override
   public int getMandatoryArguments() {
-    return 2;  // last argument is optional
+    return super.getMandatoryArguments() + 1;  // +1 for the universe.
   }
 
   @Override
   public List<ArgumentType> getArgumentTypes() {
-    return ImmutableList.of(
-        ArgumentType.EXPRESSION, ArgumentType.EXPRESSION, ArgumentType.INTEGER);
+    return ImmutableList.<ArgumentType>builder()
+        .add(ArgumentType.EXPRESSION).addAll(super.getArgumentTypes()).build();
   }
 
   /**
@@ -57,43 +54,13 @@ final class RdepsFunction implements QueryFunction {
    * towards the universe while staying within the transitive closure.
    */
   @Override
-  public <T> Set<T> eval(QueryEnvironment<T> env, QueryExpression expression, List<Argument> args)
-      throws QueryException {
-    Set<T> universeValue = args.get(0).getExpression().eval(env);
-    Set<T> argumentValue = args.get(1).getExpression().eval(env);
-    int depthBound = args.size() > 2 ? args.get(2).getInteger() : Integer.MAX_VALUE;
-
+  public <T> void eval(QueryEnvironment<T> env, QueryExpression expression,
+      List<Argument> args, Callback<T> callback)
+      throws QueryException, InterruptedException {
+    Set<T> universeValue = QueryUtil.evalAll(env, args.get(0).getExpression());
     env.buildTransitiveClosure(expression, universeValue, Integer.MAX_VALUE);
 
-    Set<T> visited = new LinkedHashSet<>();
-    Set<T> reachableFromUniverse = env.getTransitiveClosure(universeValue);
-    Collection<T> current = argumentValue;
-
-    // We need to iterate depthBound + 1 times.
-    for (int i = 0; i <= depthBound; i++) {
-      List<T> next = new ArrayList<>();
-      for (T node : current) {
-        if (!reachableFromUniverse.contains(node)) {
-          // Traversed outside the transitive closure of the universe.
-          continue;
-        }
-
-        if (!visited.add(node)) {
-          // Already visited; if we see a node in a later round, then we don't need to visit it
-          // again, because the depth at which we see it at must be greater than or equal to the
-          // last visit.
-          continue;
-        }
-
-        next.addAll(env.getReverseDeps(node));
-      }
-      if (next.isEmpty()) {
-        // Exit when there are no more nodes to visit.
-        break;
-      }
-      current = next;
-    }
-
-    return visited;
+    Predicate<T> universe = Predicates.in(env.getTransitiveClosure(universeValue));
+    eval(env, args.subList(1, args.size()), callback, universe);
   }
 }

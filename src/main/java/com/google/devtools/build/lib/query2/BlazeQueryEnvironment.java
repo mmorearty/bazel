@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,10 +13,14 @@
 // limitations under the License.
 package com.google.devtools.build.lib.query2;
 
+import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Maps;
+import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.ResolvedTargets;
 import com.google.devtools.build.lib.cmdline.TargetParsingException;
 import com.google.devtools.build.lib.events.EventHandler;
@@ -33,12 +37,15 @@ import com.google.devtools.build.lib.pkgcache.TargetEdgeObserver;
 import com.google.devtools.build.lib.pkgcache.TargetPatternEvaluator;
 import com.google.devtools.build.lib.pkgcache.TargetProvider;
 import com.google.devtools.build.lib.pkgcache.TransitivePackageLoader;
-import com.google.devtools.build.lib.query2.engine.BlazeQueryEvalResult;
+import com.google.devtools.build.lib.query2.engine.Callback;
+import com.google.devtools.build.lib.query2.engine.DigraphQueryEvalResult;
 import com.google.devtools.build.lib.query2.engine.QueryEvalResult;
 import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.engine.QueryExpression;
+import com.google.devtools.build.lib.query2.engine.QueryUtil.AbstractUniquifier;
+import com.google.devtools.build.lib.query2.engine.QueryUtil.AggregateAllCallback;
 import com.google.devtools.build.lib.query2.engine.SkyframeRestartQueryException;
-import com.google.devtools.build.lib.syntax.Label;
+import com.google.devtools.build.lib.query2.engine.Uniquifier;
 import com.google.devtools.build.lib.vfs.PathFragment;
 
 import java.util.Collection;
@@ -47,6 +54,7 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * The environment of a Blaze query. Not thread-safe.
@@ -95,14 +103,22 @@ public class BlazeQueryEnvironment extends AbstractBlazeQueryEnvironment<Target>
   }
 
   @Override
-  public BlazeQueryEvalResult<Target> evaluateQuery(QueryExpression expr) throws QueryException {
+  public DigraphQueryEvalResult<Target> evaluateQuery(QueryExpression expr,
+      final Callback<Target> callback) throws QueryException, InterruptedException {
     // Some errors are reported as QueryExceptions and others as ERROR events (if --keep_going). The
     // result is set to have an error iff there were errors emitted during the query, so we reset
     // errors here.
     eventHandler.resetErrors();
-    QueryEvalResult<Target> queryEvalResult = super.evaluateQuery(expr);
-    return new BlazeQueryEvalResult<>(queryEvalResult.getSuccess(), queryEvalResult.getResultSet(),
-        graph);
+    final AtomicBoolean empty = new AtomicBoolean(true);
+    QueryEvalResult queryEvalResult = super.evaluateQuery(expr, new Callback<Target>() {
+      @Override
+      public void process(Iterable<Target> partialResult)
+          throws QueryException, InterruptedException {
+        empty.compareAndSet(true, Iterables.isEmpty(partialResult));
+        callback.process(partialResult);
+      }
+    });
+    return new DigraphQueryEvalResult<>(queryEvalResult.getSuccess(), empty.get(), graph);
   }
 
   @Override
@@ -111,7 +127,7 @@ public class BlazeQueryEnvironment extends AbstractBlazeQueryEnvironment<Target>
     // We can safely ignore the boolean error flag. The evaluateQuery() method above wraps the
     // entire query computation in an error sensor.
 
-    Set<Target> targets = new LinkedHashSet<>(resolvedTargetPatterns.get(pattern).getTargets());
+    Set<Target> targets = new LinkedHashSet<>(resolvedTargetPatterns.get(pattern));
 
     // Sets.filter would be more convenient here, but can't deal with exceptions.
     Iterator<Target> targetIterator = targets.iterator();
@@ -165,6 +181,7 @@ public class BlazeQueryEnvironment extends AbstractBlazeQueryEnvironment<Target>
     return result;
   }
 
+  @Override
   public Target getTarget(Label label) throws TargetNotFoundException, QueryException {
     // Can't use strictScope here because we are expecting a target back.
     validateScope(label, true);
@@ -195,13 +212,21 @@ public class BlazeQueryEnvironment extends AbstractBlazeQueryEnvironment<Target>
   }
 
   @Override
-  public Collection<Target> getFwdDeps(Target target) {
-    return getTargetsFromNodes(getNode(target).getSuccessors());
+  public Collection<Target> getFwdDeps(Iterable<Target> targets) {
+    Set<Target> result = new HashSet<>();
+    for (Target target : targets) {
+      result.addAll(getTargetsFromNodes(getNode(target).getSuccessors()));
+    }
+    return result;
   }
 
   @Override
-  public Collection<Target> getReverseDeps(Target target) {
-    return getTargetsFromNodes(getNode(target).getPredecessors());
+  public Collection<Target> getReverseDeps(Iterable<Target> targets) {
+    Set<Target> result = new HashSet<>();
+    for (Target target : targets) {
+      result.addAll(getTargetsFromNodes(getNode(target).getPredecessors()));
+    }
+    return result;
   }
 
   @Override
@@ -233,16 +258,11 @@ public class BlazeQueryEnvironment extends AbstractBlazeQueryEnvironment<Target>
   @Override
   public void buildTransitiveClosure(QueryExpression caller,
                                      Set<Target> targetNodes,
-                                     int maxDepth) throws QueryException {
+                                     int maxDepth) throws QueryException, InterruptedException {
     Set<Target> targets = targetNodes;
     preloadTransitiveClosure(targets, maxDepth);
-
-    try {
-      labelVisitor.syncWithVisitor(eventHandler, targets, keepGoing,
-          loadingPhaseThreads, maxDepth, errorObserver, new GraphBuildingObserver());
-    } catch (InterruptedException e) {
-      throw new QueryException(caller, "transitive closure computation was interrupted");
-    }
+    labelVisitor.syncWithVisitor(eventHandler, targets, keepGoing,
+        loadingPhaseThreads, maxDepth, errorObserver, new GraphBuildingObserver());
 
     if (errorObserver.hasErrors()) {
       reportBuildFileError(caller, "errors were encountered while computing transitive closure");
@@ -252,6 +272,24 @@ public class BlazeQueryEnvironment extends AbstractBlazeQueryEnvironment<Target>
   @Override
   public Set<Target> getNodesOnPath(Target from, Target to) {
     return getTargetsFromNodes(graph.getShortestPath(getNode(from), getNode(to)));
+  }
+
+  @Override
+  public void eval(QueryExpression expr, Callback<Target> callback)
+      throws QueryException, InterruptedException {
+    AggregateAllCallback<Target> aggregator = new AggregateAllCallback<>();
+    expr.eval(this, aggregator);
+    callback.process(aggregator.getResult());
+  }
+
+  @Override
+  public Uniquifier<Target> createUniquifier() {
+    return new AbstractUniquifier<Target, Label>() {
+      @Override
+      protected Label extractKey(Target target) {
+        return target.getLabel();
+      }
+    };
   }
 
   private void preloadTransitiveClosure(Set<Target> targets, int maxDepth) throws QueryException {
@@ -332,7 +370,7 @@ public class BlazeQueryEnvironment extends AbstractBlazeQueryEnvironment<Target>
           try {
             addIfUniqueLabel(getSubincludeTarget(
                 subinclude.getLocalTargetLabel("BUILD"), pkg), seenLabels, dependentFiles);
-          } catch (Label.SyntaxException e) {
+          } catch (LabelSyntaxException e) {
             throw new AssertionError("BUILD should always parse as a target name", e);
           }
         }
@@ -341,13 +379,23 @@ public class BlazeQueryEnvironment extends AbstractBlazeQueryEnvironment<Target>
     return dependentFiles;
   }
 
-  protected Map<String, ResolvedTargets<Target>> preloadOrThrow(QueryExpression caller,
-      Collection<String> patterns) throws TargetParsingException {
+  private static final Function<ResolvedTargets<Target>, Set<Target>> RESOLVED_TARGETS_TO_TARGETS =
+      new Function<ResolvedTargets<Target>, Set<Target>>() {
+        @Override
+        public Set<Target> apply(ResolvedTargets<Target> resolvedTargets) {
+          return resolvedTargets.getTargets();
+        }
+      };
+
+  @Override
+  protected Map<String, Set<Target>> preloadOrThrow(
+      QueryExpression caller, Collection<String> patterns) throws TargetParsingException {
     try {
       // Note that this may throw a RuntimeException if deps are missing in Skyframe and this is
       // being called from within a SkyFunction.
-      return targetPatternEvaluator.preloadTargetPatterns(
-          eventHandler, patterns, keepGoing);
+      return Maps.transformValues(
+          targetPatternEvaluator.preloadTargetPatterns(eventHandler, patterns, keepGoing),
+          RESOLVED_TARGETS_TO_TARGETS);
     } catch (InterruptedException e) {
       // TODO(bazel-team): Propagate the InterruptedException from here [skyframe-loading].
       throw new TargetParsingException("interrupted");

@@ -1,4 +1,4 @@
-// Copyright 2015 Google Inc. All rights reserved.
+// Copyright 2015 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,25 +14,31 @@
 
 package com.google.devtools.build.lib.bazel.rules.java;
 
+import static org.junit.Assert.assertEquals;
+
 import com.google.devtools.build.lib.vfs.PathFragment;
 
-import junit.framework.TestCase;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
 
 /**
  * Unit tests for {@link BazelJavaSemantics}.
  */
-public class BazelJavaSemanticsTest extends TestCase {
+@RunWith(JUnit4.class)
+public class BazelJavaSemanticsTest {
+  @Test
   public void testFindingResources() {
     BazelJavaSemantics semantics = BazelJavaSemantics.INSTANCE;
     assertEquals(PathFragment.EMPTY_FRAGMENT,
-        semantics.getJavaResourcePath(new PathFragment("x/y/src/main/resources")));
+        semantics.getDefaultJavaResourcePath(new PathFragment("x/y/src/main/resources")));
     assertEquals(new PathFragment("foo"),
-        semantics.getJavaResourcePath(new PathFragment("x/y/src/main/resources/foo")));
+        semantics.getDefaultJavaResourcePath(new PathFragment("x/y/src/main/resources/foo")));
     assertEquals(new PathFragment("foo"),
-        semantics.getJavaResourcePath(new PathFragment("java/x/y/src/main/resources/foo")));
+        semantics.getDefaultJavaResourcePath(new PathFragment("java/x/y/src/main/resources/foo")));
     assertEquals(new PathFragment("foo/java/bar"),
-        semantics.getJavaResourcePath(new PathFragment("java/foo/java/bar")));
+        semantics.getDefaultJavaResourcePath(new PathFragment("java/foo/java/bar")));
     assertEquals(new PathFragment("foo/java/bar"),
-        semantics.getJavaResourcePath(new PathFragment("javatests/foo/java/bar")));
+        semantics.getDefaultJavaResourcePath(new PathFragment("javatests/foo/java/bar")));
   }
 }

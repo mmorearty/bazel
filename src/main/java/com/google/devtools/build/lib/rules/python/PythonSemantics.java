@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,11 +13,14 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules.python;
 
+import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.Runfiles;
 import com.google.devtools.build.lib.analysis.RunfilesSupport;
 import com.google.devtools.build.lib.rules.cpp.CcLinkParamsStore;
 import com.google.devtools.build.lib.rules.test.InstrumentedFilesCollector.InstrumentationSpec;
+
+import java.util.Collection;
 
 /**
  * Pluggable semantics for Python rules.
@@ -47,6 +50,12 @@ public interface PythonSemantics {
   InstrumentationSpec getCoverageInstrumentationSpec();
 
   /**
+   * Utility function to compile multiple .py files to .pyc files, if required.
+   */
+  Collection<Artifact> precompiledPythonFiles(
+      RuleContext ruleContext, Collection<Artifact> sources, PyCommon common);
+
+  /**
    * Create the actual executable artifact.
    *
    * <p>This should create a generating action for {@code common.getExecutable()}.
@@ -56,7 +65,8 @@ public interface PythonSemantics {
 
   /**
    * Called at the end of the analysis of {@code py_binary} rules.
+   * @throws InterruptedException 
    */
   void postInitBinary(RuleContext ruleContext, RunfilesSupport runfilesSupport,
-      PyCommon common);
+      PyCommon common) throws InterruptedException;
 }

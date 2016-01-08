@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,12 +18,14 @@ import static com.google.devtools.build.lib.rules.objc.ObjcProvider.BUNDLE_IMPOR
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.DEFINE;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.FORCE_LOAD_FOR_XCODEGEN;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.FRAMEWORK_DIR;
+import static com.google.devtools.build.lib.rules.objc.ObjcProvider.GENERAL_RESOURCE_DIR;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.GENERAL_RESOURCE_FILE;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.IMPORTED_LIBRARY;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.SDK_DYLIB;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.SDK_FRAMEWORK;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.WEAK_SDK_FRAMEWORK;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.XCASSETS_DIR;
+import static com.google.devtools.build.lib.rules.objc.ObjcProvider.XCDATAMODEL;
 import static com.google.devtools.build.lib.rules.objc.XcodeProductType.LIBRARY_STATIC;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -37,12 +39,13 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.rules.apple.AppleToolchain;
 import com.google.devtools.build.lib.rules.objc.ObjcProvider.Flag;
 import com.google.devtools.build.lib.rules.objc.ReleaseBundlingSupport.SplitArchTransition.ConfigurationDistinguisher;
-import com.google.devtools.build.lib.syntax.Label;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.xcode.xcodegen.proto.XcodeGenProtos.DependencyControl;
 import com.google.devtools.build.xcode.xcodegen.proto.XcodeGenProtos.TargetControl;
@@ -71,13 +74,13 @@ public final class XcodeProvider implements TransitiveInfoProvider {
   public static final class Builder {
     private Label label;
     private final NestedSetBuilder<String> propagatedUserHeaderSearchPaths =
-        NestedSetBuilder.stableOrder();
+        NestedSetBuilder.linkOrder();
     private final NestedSetBuilder<String> nonPropagatedUserHeaderSearchPaths =
-        NestedSetBuilder.stableOrder();
+        NestedSetBuilder.linkOrder();
     private final NestedSetBuilder<String> propagatedHeaderSearchPaths =
-        NestedSetBuilder.stableOrder();
+        NestedSetBuilder.linkOrder();
     private final NestedSetBuilder<String> nonPropagatedHeaderSearchPaths =
-        NestedSetBuilder.stableOrder();
+        NestedSetBuilder.linkOrder();
     private Optional<Artifact> bundleInfoplist = Optional.absent();
     // Dependencies must be in link order because XCode observes the dependency ordering for
     // binary linking.
@@ -101,7 +104,6 @@ public final class XcodeProvider implements TransitiveInfoProvider {
     private final NestedSetBuilder<Artifact> additionalSources = NestedSetBuilder.stableOrder();
     private final ImmutableList.Builder<XcodeProvider> extensions = new ImmutableList.Builder<>();
     private String architecture;
-    private ImmutableList.Builder<PathFragment> datamodelDirs = new ImmutableList.Builder<>();
     private boolean generateCompanionLibTarget = false;
     private ConfigurationDistinguisher configurationDistinguisher;
 
@@ -132,6 +134,15 @@ public final class XcodeProvider implements TransitiveInfoProvider {
     }
 
     /**
+     * Adds non-propagated header search paths for this target. Each relative path is interpreted
+     * relative to the given root, such as {@code "$(WORKSPACE_ROOT)"}.
+     */
+    public Builder addNonPropagatedHeaderSearchPaths(String root, Iterable<PathFragment> paths) {
+      this.nonPropagatedHeaderSearchPaths.addAll(rootEach(root, paths));
+      return this;
+    }
+
+    /**
      * Sets the Info.plist for the bundle represented by this provider.
      */
     public Builder setBundleInfoplist(Artifact bundleInfoplist) {
@@ -145,6 +156,7 @@ public final class XcodeProvider implements TransitiveInfoProvider {
      * (e.g. a test host). The given provider is not registered as a dependency with this provider.
      */
     private void addTransitiveSets(XcodeProvider dependencyish) {
+      additionalSources.addTransitive(dependencyish.additionalSources);
       inputsToXcodegen.addTransitive(dependencyish.inputsToXcodegen);
       propagatedUserHeaderSearchPaths.addTransitive(dependencyish.propagatedUserHeaderSearchPaths);
       propagatedHeaderSearchPaths.addTransitive(dependencyish.propagatedHeaderSearchPaths);
@@ -174,6 +186,7 @@ public final class XcodeProvider implements TransitiveInfoProvider {
         if (dependency.productType == XcodeProductType.EXTENSION) {
           this.extensions.add(dependency);
           this.inputsToXcodegen.addTransitive(dependency.inputsToXcodegen);
+          this.additionalSources.addTransitive(dependency.additionalSources);
         } else {
           if (doPropagate) {
             this.propagatedDependencies.add(dependency);
@@ -297,11 +310,6 @@ public final class XcodeProvider implements TransitiveInfoProvider {
       return this;
     }
 
-    public Builder addDatamodelDirs(Iterable<PathFragment> datamodelDirs) {
-      this.datamodelDirs.addAll(datamodelDirs);
-      return this;
-    }
-
     /**
      * Generates an extra LIBRARY_STATIC Xcode target with the same compilation artifacts. Dependent
      * Xcode targets will pick this companion library target as its dependency, rather than the
@@ -335,11 +343,14 @@ public final class XcodeProvider implements TransitiveInfoProvider {
    */
   public static final class Project {
     private final NestedSet<Artifact> inputsToXcodegen;
+    private final NestedSet<Artifact> additionalSources;
     private final ImmutableList<XcodeProvider> topLevelTargets;
 
     private Project(
-        NestedSet<Artifact> inputsToXcodegen, ImmutableList<XcodeProvider> topLevelTargets) {
+        NestedSet<Artifact> inputsToXcodegen, NestedSet<Artifact> additionalSources,
+        ImmutableList<XcodeProvider> topLevelTargets) {
       this.inputsToXcodegen = inputsToXcodegen;
+      this.additionalSources = additionalSources;
       this.topLevelTargets = topLevelTargets;
     }
 
@@ -349,10 +360,13 @@ public final class XcodeProvider implements TransitiveInfoProvider {
 
     public static Project fromTopLevelTargets(Iterable<XcodeProvider> topLevelTargets) {
       NestedSetBuilder<Artifact> inputsToXcodegen = NestedSetBuilder.stableOrder();
+      NestedSetBuilder<Artifact> additionalSources = NestedSetBuilder.stableOrder();
       for (XcodeProvider target : topLevelTargets) {
         inputsToXcodegen.addTransitive(target.inputsToXcodegen);
+        additionalSources.addTransitive(target.additionalSources);
       }
-      return new Project(inputsToXcodegen.build(), ImmutableList.copyOf(topLevelTargets));
+      return new Project(inputsToXcodegen.build(), additionalSources.build(),
+          ImmutableList.copyOf(topLevelTargets));
     }
 
     /**
@@ -361,6 +375,13 @@ public final class XcodeProvider implements TransitiveInfoProvider {
      */
     public NestedSet<Artifact> getInputsToXcodegen() {
       return inputsToXcodegen;
+    }
+    
+    /**
+     * Returns artifacts that are additional sources for the Xcodegen action.
+     */
+    public NestedSet<Artifact> getAdditionalSources() {
+      return additionalSources;
     }
 
     /**
@@ -419,7 +440,6 @@ public final class XcodeProvider implements TransitiveInfoProvider {
   private final NestedSet<Artifact> additionalSources;
   private final ImmutableList<XcodeProvider> extensions;
   private final String architecture;
-  private final ImmutableList<PathFragment> datamodelDirs;
   private final boolean generateCompanionLibTarget;
   private final ConfigurationDistinguisher configurationDistinguisher;
 
@@ -446,7 +466,6 @@ public final class XcodeProvider implements TransitiveInfoProvider {
     this.additionalSources = builder.additionalSources.build();
     this.extensions = builder.extensions.build();
     this.architecture = Preconditions.checkNotNull(builder.architecture);
-    this.datamodelDirs = builder.datamodelDirs.build();
     this.generateCompanionLibTarget = builder.generateCompanionLibTarget;
     this.configurationDistinguisher =
         Preconditions.checkNotNull(builder.configurationDistinguisher);
@@ -470,7 +489,7 @@ public final class XcodeProvider implements TransitiveInfoProvider {
   @VisibleForTesting
   static final EnumSet<XcodeProductType> CAN_LINK_PRODUCT_TYPES = EnumSet.of(
       XcodeProductType.APPLICATION, XcodeProductType.BUNDLE, XcodeProductType.UNIT_TEST,
-      XcodeProductType.EXTENSION);
+      XcodeProductType.EXTENSION, XcodeProductType.FRAMEWORK);
 
   /**
    * Returns the name of the Xcode target that corresponds to a build target with the given name.
@@ -517,45 +536,55 @@ public final class XcodeProvider implements TransitiveInfoProvider {
 
   private TargetControl targetControl() {
     String buildFilePath = label.getPackageFragment().getSafePathString() + "/BUILD";
-    NestedSet<String> userHeaderSearchPaths = NestedSetBuilder.<String>stableOrder()
+    NestedSet<String> userHeaderSearchPaths = NestedSetBuilder.<String>linkOrder()
         .addTransitive(propagatedUserHeaderSearchPaths)
         .addTransitive(nonPropagatedUserHeaderSearchPaths)
         .build();
-    NestedSet<String> headerSearchPaths = NestedSetBuilder.<String>stableOrder()
+    NestedSet<String> headerSearchPaths = NestedSetBuilder.<String>linkOrder()
         .addTransitive(propagatedHeaderSearchPaths)
         .addTransitive(nonPropagatedHeaderSearchPaths)
         .build();
 
     // TODO(bazel-team): Add provisioning profile information when Xcodegen supports it.
-    TargetControl.Builder targetControl = TargetControl.newBuilder()
-        .setName(label.getName())
-        .setLabel(xcodeTargetName(label))
-        .setProductType(productType.getIdentifier())
-        .addAllImportedLibrary(Artifact.toExecPaths(objcProvider.get(IMPORTED_LIBRARY)))
-        .addAllUserHeaderSearchPath(userHeaderSearchPaths)
-        .addAllHeaderSearchPath(headerSearchPaths)
-        .addAllSupportFile(Artifact.toExecPaths(headers))
-        .addAllCopt(compilationModeCopts)
-        .addAllCopt(IosSdkCommands.DEFAULT_COMPILER_FLAGS)
-        .addAllCopt(Interspersing.prependEach("-D", objcProvider.get(DEFINE)))
-        .addAllCopt(copts)
-        .addAllLinkopt(
-            Interspersing.beforeEach("-force_load", objcProvider.get(FORCE_LOAD_FOR_XCODEGEN)))
-        .addAllLinkopt(IosSdkCommands.DEFAULT_LINKER_FLAGS)
-        .addAllLinkopt(Interspersing.beforeEach(
-            "-weak_framework", SdkFramework.names(objcProvider.get(WEAK_SDK_FRAMEWORK))))
-        .addAllBuildSetting(xcodeprojBuildSettings)
-        .addAllBuildSetting(IosSdkCommands.defaultWarningsForXcode())
-        .addAllSdkFramework(SdkFramework.names(objcProvider.get(SDK_FRAMEWORK)))
-        .addAllFramework(PathFragment.safePathStrings(objcProvider.get(FRAMEWORK_DIR)))
-        .addAllXcassetsDir(PathFragment.safePathStrings(objcProvider.get(XCASSETS_DIR)))
-        .addAllXcdatamodel(PathFragment.safePathStrings(datamodelDirs))
-        .addAllBundleImport(PathFragment.safePathStrings(objcProvider.get(BUNDLE_IMPORT_DIR)))
-        .addAllSdkDylib(objcProvider.get(SDK_DYLIB))
-        .addAllGeneralResourceFile(Artifact.toExecPaths(objcProvider.get(GENERAL_RESOURCE_FILE)))
-        .addSupportFile(buildFilePath);
+    TargetControl.Builder targetControl =
+        TargetControl.newBuilder()
+            .setName(label.getName())
+            .setLabel(xcodeTargetName(label))
+            .setProductType(productType.getIdentifier())
+            .addSupportFile(buildFilePath)
+            .addAllImportedLibrary(Artifact.toExecPaths(objcProvider.get(IMPORTED_LIBRARY)))
+            .addAllUserHeaderSearchPath(userHeaderSearchPaths)
+            .addAllHeaderSearchPath(headerSearchPaths)
+            .addAllSupportFile(Artifact.toExecPaths(headers))
+            .addAllCopt(compilationModeCopts)
+            .addAllCopt(CompilationSupport.DEFAULT_COMPILER_FLAGS)
+            .addAllCopt(Interspersing.prependEach("-D", objcProvider.get(DEFINE)))
+            .addAllCopt(copts)
+            .addAllLinkopt(
+                Interspersing.beforeEach("-force_load", objcProvider.get(FORCE_LOAD_FOR_XCODEGEN)))
+            .addAllLinkopt(CompilationSupport.DEFAULT_LINKER_FLAGS)
+            .addAllLinkopt(
+                Interspersing.beforeEach(
+                    "-weak_framework", SdkFramework.names(objcProvider.get(WEAK_SDK_FRAMEWORK))))
+            .addAllBuildSetting(xcodeprojBuildSettings)
+            .addAllBuildSetting(AppleToolchain.defaultWarningsForXcode())
+            .addAllSdkFramework(SdkFramework.names(objcProvider.get(SDK_FRAMEWORK)))
+            .addAllFramework(PathFragment.safePathStrings(objcProvider.get(FRAMEWORK_DIR)))
+            .addAllXcassetsDir(PathFragment.safePathStrings(objcProvider.get(XCASSETS_DIR)))
+            .addAllXcdatamodel(PathFragment.safePathStrings(
+                Xcdatamodels.datamodelDirs(objcProvider.get(XCDATAMODEL))))
+            .addAllBundleImport(PathFragment.safePathStrings(objcProvider.get(BUNDLE_IMPORT_DIR)))
+            .addAllSdkDylib(objcProvider.get(SDK_DYLIB))
+            .addAllGeneralResourceFile(
+                Artifact.toExecPaths(objcProvider.get(GENERAL_RESOURCE_FILE)))
+            .addAllGeneralResourceFile(
+                PathFragment.safePathStrings(objcProvider.get(GENERAL_RESOURCE_DIR)));
 
     if (CAN_LINK_PRODUCT_TYPES.contains(productType)) {
+      // For builds with --ios_multi_cpus set, we may have several copies of some XCodeProviders
+      // in the dependencies (one per cpu architecture). We deduplicate the corresponding
+      // xcode target names with a LinkedHashSet before adding to the TargetControl.
+      Set<DependencyControl> dependencySet = new LinkedHashSet<>();
       for (XcodeProvider dependency : propagatedDependencies) {
         // Only add a library target to a binary's dependencies if it has source files to compile
         // and it is not from the "non_propagated_deps" attribute. Xcode cannot build targets
@@ -572,10 +601,15 @@ public final class XcodeProvider implements TransitiveInfoProvider {
         boolean hasSources = dependency.compilationArtifacts.isPresent()
             && dependency.compilationArtifacts.get().getArchive().isPresent();
         if (hasSources || (dependency.productType == XcodeProductType.BUNDLE)) {
-            targetControl.addDependency(DependencyControl.newBuilder()
-                .setTargetLabel(dependency.dependencyXcodeTargetName())
+          String dependencyXcodeTargetName = dependency.dependencyXcodeTargetName();
+          dependencySet.add(DependencyControl.newBuilder()
+                .setTargetLabel(dependencyXcodeTargetName)
                 .build());
         }
+      }
+
+      for (DependencyControl dependencyControl : dependencySet) {
+        targetControl.addDependency(dependencyControl);
       }
     }
     for (XcodeProvider justTestHost : testHost.asSet()) {
@@ -596,6 +630,8 @@ public final class XcodeProvider implements TransitiveInfoProvider {
     for (CompilationArtifacts artifacts : compilationArtifacts.asSet()) {
       targetControl
           .addAllSourceFile(Artifact.toExecPaths(artifacts.getSrcs()))
+          .addAllSupportFile(Artifact.toExecPaths(artifacts.getAdditionalHdrs()))
+          .addAllSupportFile(Artifact.toExecPaths(artifacts.getPrivateHdrs()))
           .addAllNonArcSourceFile(Artifact.toExecPaths(artifacts.getNonArcSrcs()));
 
       for (Artifact pchFile : artifacts.getPchFile().asSet()) {
@@ -626,13 +662,14 @@ public final class XcodeProvider implements TransitiveInfoProvider {
         .clearDependency()
         .clearBuildSetting()
         .addAllBuildSetting(companionTargetXcodeprojBuildSettings)
-        .addAllBuildSetting(IosSdkCommands.defaultWarningsForXcode())
+        .addAllBuildSetting(AppleToolchain.defaultWarningsForXcode())
         .build();
   }
 
   /**
    * Prepends the given path to each path in {@code paths}. Empty paths are
-   * transformed to the value of {@code variable} rather than {@code variable + "/."}
+   * transformed to the value of {@code variable} rather than {@code variable + "/."}. Absolute
+   * paths are returned without modifications.
    */
   @VisibleForTesting
   static Iterable<String> rootEach(final String prefix, Iterable<PathFragment> paths) {
@@ -645,6 +682,8 @@ public final class XcodeProvider implements TransitiveInfoProvider {
       public String apply(PathFragment input) {
         if (input.getSafePathString().equals(".")) {
           return prefix;
+        } else if (input.isAbsolute()) {
+          return input.getSafePathString();
         } else {
           return prefix + "/" + input.getSafePathString();
         }

@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -103,7 +103,7 @@ public class CachingAnalysisEnvironment implements AnalysisEnvironment {
     this.errorEventListener = errorEventListener;
     this.skyframeEnv = env;
     this.allowRegisteringActions = allowRegisteringActions;
-    this.binTools = binTools;
+    this.binTools = Preconditions.checkNotNull(binTools);
     middlemanFactory = new MiddlemanFactory(artifactFactory, this);
     artifacts = new HashMap<>();
   }
@@ -148,8 +148,8 @@ public class CachingAnalysisEnvironment implements AnalysisEnvironment {
       }
       throw new IllegalStateException(
           String.format(
-              "%s %s : These artifacts miss a generating action:\n%s\n"
-              + "These actions we checked:\n%s\n",
+              "%s %s : These artifacts do not have a generating action:\n%s\n"
+              + "These actions were checked:\n%s\n",
               target.getTargetKind(), target.getLabel(),
               Joiner.on('\n').join(orphanArtifacts), Joiner.on('\n').join(checkedActions)));
     }

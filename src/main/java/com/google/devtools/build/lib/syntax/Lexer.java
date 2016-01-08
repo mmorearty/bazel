@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,17 +15,20 @@
 package com.google.devtools.build.lib.syntax;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.Location;
+import com.google.devtools.build.lib.profiler.Profiler;
+import com.google.devtools.build.lib.profiler.ProfilerTask;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.vfs.PathFragment;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Stack;
 
 /**
@@ -74,7 +77,7 @@ public final class Lexer {
   // bottom.
   private final Stack<Integer> indentStack = new Stack<>();
 
-  private final List<Token> tokens = new ArrayList<>();
+  private final List<Token> tokens;
 
   // The number of unclosed open-parens ("(", '{', '[') at the current point in
   // the stream. Whitespace is handled differently when this is nonzero.
@@ -88,20 +91,30 @@ public final class Lexer {
    * Constructs a lexer which tokenizes the contents of the specified
    * InputBuffer. Any errors during lexing are reported on "handler".
    */
-  public Lexer(ParserInputSource input, EventHandler eventHandler, boolean parsePython) {
+  public Lexer(ParserInputSource input, EventHandler eventHandler, boolean parsePython,
+      LineNumberTable lineNumberTable) {
     this.buffer = input.getContent();
+    // Empirical measurements show roughly 1 token per 8 characters in buffer.
+    this.tokens = Lists.newArrayListWithExpectedSize(buffer.length / 8);
     this.pos = 0;
     this.parsePython = parsePython;
     this.eventHandler = eventHandler;
-    this.locationInfo =
-        new LocationInfo(input.getPath(), LineNumberTable.create(buffer, input.getPath()));
+    this.locationInfo = new LocationInfo(input.getPath(), lineNumberTable);
 
     indentStack.push(0);
+    long startTime = Profiler.nanoTimeMaybe();
     tokenize();
+    Profiler.instance().logSimpleTask(startTime, ProfilerTask.SKYLARK_LEXER, getFilename());
   }
 
   public Lexer(ParserInputSource input, EventHandler eventHandler) {
-    this(input, eventHandler, false);
+    this(input, eventHandler, /*parsePython=*/false,
+        LineNumberTable.create(input.getContent(), input.getPath()));
+  }
+
+  public Lexer(ParserInputSource input, EventHandler eventHandler, boolean parsePython) {
+    this(input, eventHandler, parsePython,
+        LineNumberTable.create(input.getContent(), input.getPath()));
   }
 
   /**
@@ -175,6 +188,21 @@ public final class Lexer {
     @Override
     public LineAndColumn getEndLineAndColumn() {
       return lineNumberTable.getLineAndColumn(getEndOffset());
+    }
+
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(lineNumberTable, internalHashCode());
+    }
+
+    @Override
+    public boolean equals(Object other) {
+      if (other == null || !other.getClass().equals(getClass())) {
+        return false;
+      }
+      LexerLocation that = (LexerLocation) other;
+      return internalEquals(that) && Objects.equals(this.lineNumberTable, that.lineNumberTable);
     }
   }
 
@@ -284,7 +312,7 @@ public final class Lexer {
    *
    * @return the string-literal token.
    */
-  private Token escapedStringLiteral(char quot) {
+  private Token escapedStringLiteral(char quot, boolean isRaw) {
     boolean inTriplequote = skipTripleQuote(quot);
 
     int oldPos = pos - 1;
@@ -307,6 +335,14 @@ public final class Lexer {
           if (pos == buffer.length) {
             error("unterminated string literal at eof", oldPos, pos);
             return new Token(TokenKind.STRING, oldPos, pos, literal.toString());
+          }
+          if (isRaw) {
+            // Insert \ and the following character.
+            // As in Python, it means that a raw string can never end with a single \.
+            literal.append('\\');
+            literal.append(buffer[pos]);
+            pos++;
+            break;
           }
           c = buffer[pos];
           pos++;
@@ -400,7 +436,7 @@ public final class Lexer {
     // Don't even attempt to parse triple-quotes here.
     if (skipTripleQuote(quot)) {
       pos -= 2;
-      return escapedStringLiteral(quot);
+      return escapedStringLiteral(quot, isRaw);
     }
 
     // first quick optimistic scan for a simple non-escaped string
@@ -418,11 +454,10 @@ public final class Lexer {
             // skip the next character
             pos++;
             break;
-          } else {
-            // oops, hit an escape, need to start over & build a new string buffer
-            pos = oldPos + 1;
-            return escapedStringLiteral(quot);
           }
+          // oops, hit an escape, need to start over & build a new string buffer
+          pos = oldPos + 1;
+          return escapedStringLiteral(quot, false);
         case '\'':
         case '"':
           if (c == quot) {
@@ -674,6 +709,10 @@ public final class Lexer {
       }
       case '-': {
         addToken(new Token(TokenKind.MINUS, pos - 1, pos));
+        break;
+      }
+      case '|': {
+        addToken(new Token(TokenKind.PIPE, pos - 1, pos));
         break;
       }
       case '=': {

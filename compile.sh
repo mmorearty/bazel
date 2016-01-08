@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2014 Google Inc. All rights reserved.
+# Copyright 2014 The Bazel Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -59,7 +59,7 @@ function parse_options() {
   [[ "${COMMANDS}" =~ (test|all) ]] && DO_TESTS=1
 
   BAZEL_BIN=${2:-"bazel-bin/src/bazel"}
-  BAZEL_SUM=${3:-"bazel-out/bazel_checksum"}
+  BAZEL_SUM=${3:-"x"}
 }
 
 parse_options "${@}"
@@ -82,13 +82,36 @@ fi
 #
 # Bootstrap bazel using the previous bazel binary = release binary
 #
-if [ -z "${EMBED_LABEL-}" ]; then
+if [ "${EMBED_LABEL-x}" = "x" ]; then
   # Add a default label when unspecified
   git_sha1=$(git_sha1)
   EMBED_LABEL="head (@${git_sha1:-non-git})"
 fi
 
 source scripts/bootstrap/bootstrap.sh
+if [ $DO_TOOLS_COMPILATION ]; then
+  if [[ $PLATFORM == "darwin" ]]; then
+    bazel_bootstrap //src/tools/xcode/actoolwrapper:actoolwrapper tools/objc/actoolwrapper.sh 0755
+    bazel_bootstrap //src/tools/xcode/ibtoolwrapper:ibtoolwrapper tools/objc/ibtoolwrapper.sh 0755
+    bazel_bootstrap //src/tools/xcode/momcwrapper:momcwrapper tools/objc/momcwrapper.sh 0755
+    bazel_bootstrap //src/tools/xcode/swiftstdlibtoolwrapper:swiftstdlibtoolwrapper tools/objc/swiftstdlibtoolzip.sh 0755
+    bazel_bootstrap //src/tools/xcode/xcrunwrapper:xcrunwrapper tools/objc/xcrunwrapper.sh 0755
+    bazel_bootstrap //src/objc_tools/bundlemerge:bundlemerge_deploy.jar \
+        tools/objc/precomp_bundlemerge_deploy.jar
+    bazel_bootstrap //src/objc_tools/plmerge:plmerge_deploy.jar \
+        tools/objc/precomp_plmerge_deploy.jar
+    bazel_bootstrap //src/objc_tools/xcodegen:xcodegen_deploy.jar \
+        tools/objc/precomp_xcodegen_deploy.jar
+    if xcodebuild -showsdks 2> /dev/null | grep -q '\-sdk iphonesimulator'; then
+        bazel_bootstrap //src/tools/xcode/stdredirect:StdRedirect.dylib \
+            tools/objc/StdRedirect.dylib 0755
+    fi
+    bazel_bootstrap //src/tools/xcode/realpath:realpath tools/objc/realpath 0755
+    bazel_bootstrap //src/tools/xcode/environment:environment_plist \
+        tools/objc/environment_plist.sh 0755
+  fi
+fi
+
 if [ $DO_COMPILE ]; then
   new_step 'Building Bazel with Bazel'
   display "."
@@ -97,39 +120,13 @@ if [ $DO_COMPILE ]; then
 fi
 
 #
-# Bootstrap tools using the release binary
-#
-if [ $DO_TOOLS_COMPILATION ]; then
-  new_step 'Building Bazel tools'
-  bazel_bootstrap //third_party/ijar:ijar tools/jdk/ijar 755
-  bazel_bootstrap //src/java_tools/singlejar:SingleJar_deploy.jar \
-      tools/jdk/SingleJar_deploy.jar
-  bazel_bootstrap //src/java_tools/buildjar:JavaBuilder_deploy.jar \
-      tools/jdk/JavaBuilder_deploy.jar
-  if [[ $PLATFORM == "darwin" ]]; then
-    bazel_bootstrap //src/tools/xcode-common/java/com/google/devtools/build/xcode/actoolzip:actoolzip_deploy.jar \
-        tools/objc/precomp_actoolzip_deploy.jar
-    bazel_bootstrap //src/tools/xcode-common/java/com/google/devtools/build/xcode/ibtoolzip:ibtoolzip_deploy.jar \
-        tools/objc/precomp_ibtoolzip_deploy.jar
-    bazel_bootstrap //src/objc_tools/momczip:momczip_deploy.jar \
-        tools/objc/precomp_momczip_deploy.jar
-    bazel_bootstrap //src/objc_tools/bundlemerge:bundlemerge_deploy.jar \
-        tools/objc/precomp_bundlemerge_deploy.jar
-    bazel_bootstrap //src/objc_tools/plmerge:plmerge_deploy.jar \
-        tools/objc/precomp_plmerge_deploy.jar
-    bazel_bootstrap //src/objc_tools/xcodegen:xcodegen_deploy.jar \
-        tools/objc/precomp_xcodegen_deploy.jar
-  fi
-fi
-
-#
 # Output is deterministic between two bootstrapped bazel binary using the actual tools and the
 # released binary.
 #
 if [ $DO_CHECKSUM ]; then
   new_step "Determinism test"
-  BAZEL_SUM=${BAZEL_SUM:-bazel-out/bazel_checksum}
-  if [ ! -f ${BAZEL_SUM} ]; then
+  if [ ! -f ${BAZEL_SUM:-x} ]; then
+    BAZEL_SUM=bazel-out/bazel_checksum
     log "First build"
     bootstrap_test ${BAZEL} ${BAZEL_SUM}
   else
@@ -153,7 +150,28 @@ fi
 if [ $DO_TESTS ]; then
   new_step "Running tests"
   display "."
-  $BAZEL --blazerc=${BAZELRC} --nomaster_blazerc test \
+
+  ndk_target="$(get_bind_target //external:android_ndk_for_testing)"
+  sdk_target="$(get_bind_target //external:android_sdk_for_testing)"
+  if [ "$ndk_target" = "//:dummy" -o "$sdk_target" = "//:dummy" ]; then
+    display "$WARNING Android SDK or NDK are not set in the WORKSPACE file. Android tests will not be run."
+  fi
+
+  [ -n "$JAVAC_VERSION" ] || get_java_version
+  if [[ ! "${BAZEL_TEST_FILTERS-}" =~ "-jdk8" ]] \
+      && [ "8" -gt ${JAVAC_VERSION#*.} ]; then
+    display "$WARNING Your version of Java is lower than 1.8!"
+    display "$WARNING Deactivating Java 8 tests, please use a JDK 8 to fully"
+    display "$WARNING test Bazel."
+    if [ -n "${BAZEL_TEST_FILTERS-}" ]; then
+      BAZEL_TEST_FILTERS="${BAZEL_TEST_FILTERS},-jdk8"
+    else
+      BAZEL_TEST_FILTERS="-jdk8"
+    fi
+  fi
+  $BAZEL --bazelrc=${BAZELRC} --nomaster_bazelrc test \
+      --test_tag_filters="${BAZEL_TEST_FILTERS-}" \
+      --build_tests_only \
       --javacopt="-source ${JAVA_VERSION} -target ${JAVA_VERSION}" \
       -k --test_output=errors //src/... //third_party/ijar/... //scripts/... \
       || fail "Tests failed"

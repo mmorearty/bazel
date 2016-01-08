@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ import com.google.devtools.build.lib.analysis.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
-import com.google.devtools.build.lib.packages.Type;
+import com.google.devtools.build.lib.packages.BuildType;
 
 import java.util.List;
 
@@ -28,12 +28,19 @@ import java.util.List;
 @Immutable
 public final class JavaToolchainProvider implements TransitiveInfoProvider {
 
+  private final String sourceVersion;
+  private final String targetVersion;
+  private final String encoding;
   private final ImmutableList<String> javacOptions;
   private final ImmutableList<String> javacJvmOptions;
 
   public JavaToolchainProvider(JavaToolchainData data, List<String> defaultJavacFlags,
       List<String> defaultJavacJvmOpts) {
-    super();
+
+    this.sourceVersion = data.getSourceVersion();
+    this.targetVersion = data.getTargetVersion();
+    this.encoding = data.getEncoding();
+    
     // merges the defaultJavacFlags from
     // {@link JavaConfiguration} with the flags from the {@code java_toolchain} rule.
     this.javacOptions = ImmutableList.<String>builder()
@@ -87,7 +94,7 @@ public final class JavaToolchainProvider implements TransitiveInfoProvider {
    *         provided by the {@link JavaConfiguration} fragment.
    */
   public static List<String> getDefaultJavacJvmOptions(RuleContext ruleContext) {
-    if (!ruleContext.getRule().isAttrDefined(":java_toolchain", Type.LABEL))  {
+    if (!ruleContext.getRule().isAttrDefined(":java_toolchain", BuildType.LABEL))  {
       // As some rules might not have java_toolchain dependency (e.g., java_import), we silently
       // ignore it. The rules needing it will error in #getDefaultJavacOptions(RuleContext) anyway.
       return ImmutableList.of();
@@ -99,5 +106,17 @@ public final class JavaToolchainProvider implements TransitiveInfoProvider {
       return ImmutableList.of();
     }
     return javaToolchain.getJavacJvmOptions();
+  }
+
+  public String getSourceVersion() {
+    return sourceVersion;
+  }
+
+  public String getTargetVersion() {
+    return targetVersion;
+  }
+
+  public String getEncoding() {
+    return encoding;
   }
 }

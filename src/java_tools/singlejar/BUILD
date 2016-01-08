@@ -2,7 +2,7 @@ package(default_visibility = ["//src:__subpackages__"])
 
 filegroup(
     name = "srcs",
-    srcs = glob(["**"]),
+    srcs = glob(["**"]) + ["//src/java_tools/singlejar/java/com/google/devtools/build/zip:srcs"],
     visibility = ["//src/test/shell/bazel:__pkg__"],
 )
 
@@ -10,8 +10,8 @@ java_library(
     name = "libSingleJar",
     srcs = glob(["java/**/singlejar/**/*.java"]),
     deps = [
-        ":zip",
-        "//src/main/java:shell",
+        "//src/java_tools/singlejar/java/com/google/devtools/build/zip",
+        "//src/main/java/com/google/devtools/build/lib:shell",
         "//third_party:jsr305",
     ],
 )
@@ -28,9 +28,9 @@ java_test(
     args = ["com.google.devtools.build.singlejar.SingleJarTests"],
     deps = [
         ":libSingleJar",
-        ":zip",
-        "//src/main/java:shell",
-        "//src/test/java:testutil",
+        "//src/java_tools/singlejar/java/com/google/devtools/build/zip",
+        "//src/main/java/com/google/devtools/build/lib:shell",
+        "//src/test/java/com/google/devtools/build/lib:testutil",
         "//third_party:guava",
         "//third_party:jsr305",
         "//third_party:junit4",
@@ -38,21 +38,15 @@ java_test(
     ],
 )
 
-java_library(
-    name = "zip",
-    srcs = glob(["java/**/zip/**/*.java"]),
-    deps = [
-        "//third_party:jsr305",
-    ],
-)
-
 java_test(
     name = "zipTests",
+    size = "enormous",
     srcs = glob(["javatests/**/zip/**/*.java"]),
     args = ["com.google.devtools.build.zip.ZipTests"],
+    tags = ["zip"],
     deps = [
-        ":zip",
-        "//src/test/java:testutil",
+        "//src/java_tools/singlejar/java/com/google/devtools/build/zip",
+        "//src/test/java/com/google/devtools/build/lib:testutil",
         "//third_party:guava",
         "//third_party:guava-testlib",
         "//third_party:junit4",
@@ -74,11 +68,11 @@ bootstrap_java_library(
 
 bootstrap_java_binary(
     name = "bootstrap",
-    srcs = glob(["java/**/*.java"]),
+    srcs = glob(["java/**/*.java"]) + ["//src/java_tools/singlejar/java/com/google/devtools/build/zip:java-srcs"],
     main_class = "com.google.devtools.build.singlejar.SingleJar",
     visibility = ["//visibility:public"],
     deps = [
         ":skylark-deps",
-        "//src/main/java:shell-skylark",
+        "//src/main/java/com/google/devtools/build/lib:shell-skylark",
     ],
 )

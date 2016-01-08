@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -30,13 +30,14 @@ import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration.StrictDepsMode;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.rules.cpp.CcLinkParams.Builder;
+import com.google.devtools.build.lib.rules.cpp.CcLinkParamsProvider;
 import com.google.devtools.build.lib.rules.cpp.CcLinkParamsStore;
 import com.google.devtools.build.lib.rules.cpp.CcSpecificLinkParamsProvider;
 import com.google.devtools.build.lib.rules.java.JavaConfiguration.JavaClasspathMode;
-import com.google.devtools.build.lib.syntax.Label;
 import com.google.devtools.build.lib.util.FileType;
 
 import java.util.ArrayList;
@@ -105,6 +106,7 @@ public final class JavaLibraryHelper {
   private StrictDepsMode strictDepsMode = StrictDepsMode.OFF;
   private JavaClasspathMode classpathMode = JavaClasspathMode.OFF;
   private boolean emitProviders = true;
+  private boolean legacyCollectCppAndJavaLinkOptions;
 
   public JavaLibraryHelper(RuleContext ruleContext) {
     this.ruleContext = ruleContext;
@@ -187,7 +189,7 @@ public final class JavaLibraryHelper {
   public JavaLibraryHelper addDeps(Iterable<? extends TransitiveInfoCollection> deps) {
     for (TransitiveInfoCollection dep : deps) {
       Preconditions.checkArgument(dep.getConfiguration() == null
-          || dep.getConfiguration().equals(configuration));
+          || configuration.equalsOrIsSupersetOf(dep.getConfiguration()));
       this.deps.add(dep);
     }
     return this;
@@ -220,6 +222,16 @@ public final class JavaLibraryHelper {
   }
 
   /**
+   * Collects link options from both Java and C++ dependencies. This is never what you want, and
+   * only exists for backwards compatibility.
+   */
+  public JavaLibraryHelper setLegacyCollectCppAndJavaLinkOptions(
+      boolean legacyCollectCppAndJavaLinkOptions) {
+    this.legacyCollectCppAndJavaLinkOptions = legacyCollectCppAndJavaLinkOptions;
+    return this;
+  }
+
+  /**
    * Creates the compile actions and providers.
    */
   public Info build(JavaSemantics semantics) {
@@ -239,7 +251,12 @@ public final class JavaLibraryHelper {
     JavaCompilationHelper helper =
         new JavaCompilationHelper(ruleContext, semantics, javacOpts, attributes);
     Artifact outputDepsProto = helper.createOutputDepsProtoArtifact(output, artifactsBuilder);
-    helper.createCompileAction(output, null, outputDepsProto, null);
+    helper.createCompileAction(
+        output,
+        null /* manifestProtoOutput */,
+        null /* gensrcOutputJar */,
+        outputDepsProto,
+        null /* outputMetadata */);
     helper.createCompileTimeJarAction(output, outputDepsProto, artifactsBuilder);
     artifactsBuilder.addRuntimeJar(output);
     JavaCompilationArtifacts compilationArtifacts = artifactsBuilder.build();
@@ -356,7 +373,7 @@ public final class JavaLibraryHelper {
 
   private JavaRunfilesProvider collectJavaRunfiles(
       JavaCompilationArtifacts javaCompilationArtifacts) {
-    Runfiles runfiles = new Runfiles.Builder()
+    Runfiles runfiles = new Runfiles.Builder(ruleContext.getWorkspaceName())
         // Compiled templates as well, for API.
         .addArtifacts(javaCompilationArtifacts.getRuntimeJars())
         .addTargets(deps, JavaRunfilesProvider.TO_RUNFILES)
@@ -368,14 +385,18 @@ public final class JavaLibraryHelper {
     return new CcLinkParamsStore() {
       @Override
       protected void collect(Builder builder, boolean linkingStatically, boolean linkShared) {
-        builder.addTransitiveLangTargets(
-            deps,
-            JavaCcLinkParamsProvider.TO_LINK_PARAMS);
-        builder.addTransitiveTargets(deps);
-        // TODO(bazel-team): This may need to be optional for some clients of this class.
-        builder.addTransitiveLangTargets(
-            deps,
-            CcSpecificLinkParamsProvider.TO_LINK_PARAMS);
+        if (legacyCollectCppAndJavaLinkOptions) {
+          builder.addTransitiveTargets(deps,
+              JavaCcLinkParamsProvider.TO_LINK_PARAMS);
+          builder.addTransitiveTargets(deps,
+              CcLinkParamsProvider.TO_LINK_PARAMS,
+              CcSpecificLinkParamsProvider.TO_LINK_PARAMS);
+        } else {
+          builder.addTransitiveTargets(deps,
+              JavaCcLinkParamsProvider.TO_LINK_PARAMS,
+              CcLinkParamsProvider.TO_LINK_PARAMS,
+              CcSpecificLinkParamsProvider.TO_LINK_PARAMS);
+        }
       }
     };
   }

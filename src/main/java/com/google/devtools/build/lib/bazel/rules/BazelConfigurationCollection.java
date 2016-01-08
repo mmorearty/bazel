@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,9 +15,11 @@
 package com.google.devtools.build.lib.bazel.rules;
 
 import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
+import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.HashBasedTable;
-import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableListMultimap;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Table;
 import com.google.devtools.build.lib.analysis.ConfigurationCollectionFactory;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
@@ -29,18 +31,20 @@ import com.google.devtools.build.lib.analysis.config.ConfigurationFactory;
 import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
 import com.google.devtools.build.lib.analysis.config.PackageProviderForConfigurations;
 import com.google.devtools.build.lib.bazel.rules.cpp.BazelCppRuleClasses.CppTransition;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.packages.AggregatingAttributeMapper;
 import com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition;
+import com.google.devtools.build.lib.packages.Attribute.SplitTransition;
 import com.google.devtools.build.lib.packages.Attribute.Transition;
+import com.google.devtools.build.lib.packages.BuildType;
 import com.google.devtools.build.lib.packages.NoSuchThingException;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.Target;
-import com.google.devtools.build.lib.packages.Type;
-import com.google.devtools.build.lib.syntax.Label;
 
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -55,21 +59,14 @@ public class BazelConfigurationCollection implements ConfigurationCollectionFact
   @Nullable
   public BuildConfiguration createConfigurations(
       ConfigurationFactory configurationFactory,
-      PackageProviderForConfigurations loadedPackageProvider,
+      Cache<String, BuildConfiguration> cache,
+      PackageProviderForConfigurations packageProvider,
       BuildOptions buildOptions,
       EventHandler errorEventListener,
       boolean performSanityCheck) throws InvalidConfigurationException {
-
-    // We cache all the related configurations for this target configuration in a cache that is
-    // dropped at the end of this method call. We instead rely on the cache for entire collections
-    // for caching the target and related configurations, and on a dedicated host configuration
-    // cache for the host configuration.
-    Cache<String, BuildConfiguration> cache =
-        CacheBuilder.newBuilder().<String, BuildConfiguration>build();
-
     // Target configuration
     BuildConfiguration targetConfiguration = configurationFactory.getConfiguration(
-        loadedPackageProvider, buildOptions, false, cache);
+        packageProvider, buildOptions, false, cache);
     if (targetConfiguration == null) {
       return null;
     }
@@ -80,10 +77,36 @@ public class BazelConfigurationCollection implements ConfigurationCollectionFact
     // Note that this passes in the dataConfiguration, not the target
     // configuration. This is intentional.
     BuildConfiguration hostConfiguration = getHostConfigurationFromRequest(configurationFactory,
-        loadedPackageProvider, dataConfiguration, buildOptions);
+        packageProvider, dataConfiguration, buildOptions, cache);
     if (hostConfiguration == null) {
       return null;
     }
+
+    ListMultimap<SplitTransition<?>, BuildConfiguration> splitTransitionsTable =
+        ArrayListMultimap.create();
+    for (SplitTransition<BuildOptions> transition : buildOptions.getPotentialSplitTransitions()) {
+      List<BuildOptions> splitOptionsList = transition.split(buildOptions);
+
+      // While it'd be clearer to condition the below on "if (!splitOptionsList.empty())",
+      // IosExtension.ExtensionSplitArchTransition defaults to a single-value split. If we failed
+      // that case then no builds would work, whether or not they're iOS builds (since iOS
+      // configurations are unconditionally loaded). Once we have dynamic configuraiton support
+      // for split transitions, this will all go away.
+      if (splitOptionsList.size() > 1 && targetConfiguration.useDynamicConfigurations()) {
+        throw new InvalidConfigurationException(
+            "dynamic configurations don't yet support split transitions");
+      }
+
+      for (BuildOptions splitOptions : splitOptionsList) {
+        BuildConfiguration splitConfig = configurationFactory.getConfiguration(
+            packageProvider, splitOptions, false, cache);
+        splitTransitionsTable.put(transition, splitConfig);
+      }
+    }
+    if (packageProvider.valuesMissing()) {
+      return null;
+    }
+
 
     // Sanity check that the implicit labels are all in the transitive closure of explicit ones.
     // This also registers all targets in the cache entry and validates them on subsequent requests.
@@ -92,7 +115,7 @@ public class BazelConfigurationCollection implements ConfigurationCollectionFact
       // We allow the package provider to be null for testing.
       for (Label label : buildOptions.getAllLabels().values()) {
         try {
-          collectTransitiveClosure(loadedPackageProvider, reachableLabels, label);
+          collectTransitiveClosure(packageProvider, reachableLabels, label);
         } catch (NoSuchThingException e) {
           // We've loaded the transitive closure of the labels-to-load above, and made sure that
           // there are no errors loading it, so this can't happen.
@@ -104,9 +127,32 @@ public class BazelConfigurationCollection implements ConfigurationCollectionFact
     }
 
     BuildConfiguration result = setupTransitions(
-        targetConfiguration, dataConfiguration, hostConfiguration);
+        targetConfiguration, dataConfiguration, hostConfiguration, splitTransitionsTable);
     result.reportInvalidOptions(errorEventListener);
     return result;
+  }
+
+  private static class BazelTransitions extends BuildConfigurationCollection.Transitions {
+    public BazelTransitions(BuildConfiguration configuration,
+        Map<? extends Transition, ConfigurationHolder> transitionTable,
+        ListMultimap<? extends SplitTransition<?>, BuildConfiguration> splitTransitionTable) {
+      super(configuration, transitionTable, splitTransitionTable);
+    }
+
+    @Override
+    protected Transition getDynamicTransition(Transition configurationTransition) {
+      if (configurationTransition == ConfigurationTransition.DATA) {
+        return ConfigurationTransition.NONE;
+      } else {
+        return super.getDynamicTransition(configurationTransition);
+      }
+    }
+  }
+
+  @Override
+  public Transitions getDynamicTransitionLogic(BuildConfiguration config)  {
+    return new BazelTransitions(config, ImmutableMap.<Transition, ConfigurationHolder>of(),
+          ImmutableListMultimap.<SplitTransition<?>, BuildConfiguration>of());
   }
 
   /**
@@ -130,14 +176,15 @@ public class BazelConfigurationCollection implements ConfigurationCollectionFact
   private BuildConfiguration getHostConfigurationFromRequest(
       ConfigurationFactory configurationFactory,
       PackageProviderForConfigurations loadedPackageProvider,
-      BuildConfiguration requestConfig, BuildOptions buildOptions)
+      BuildConfiguration requestConfig, BuildOptions buildOptions,
+      Cache<String, BuildConfiguration> cache)
       throws InvalidConfigurationException {
     BuildConfiguration.Options commonOptions = buildOptions.get(BuildConfiguration.Options.class);
     if (!commonOptions.useDistinctHostConfiguration) {
       return requestConfig;
     } else {
-      BuildConfiguration hostConfig = configurationFactory.getHostConfiguration(
-          loadedPackageProvider, buildOptions, /*fallback=*/false);
+      BuildConfiguration hostConfig = configurationFactory.getConfiguration(
+          loadedPackageProvider, buildOptions.createHostOptions(false), false, cache);
       if (hostConfig == null) {
         return null;
       }
@@ -146,9 +193,13 @@ public class BazelConfigurationCollection implements ConfigurationCollectionFact
   }
 
   static BuildConfiguration setupTransitions(BuildConfiguration targetConfiguration,
-      BuildConfiguration dataConfiguration, BuildConfiguration hostConfiguration) {
-    Set<BuildConfiguration> allConfigurations = ImmutableSet.of(targetConfiguration,
-        dataConfiguration, hostConfiguration);
+      BuildConfiguration dataConfiguration, BuildConfiguration hostConfiguration,
+      ListMultimap<SplitTransition<?>, BuildConfiguration> splitTransitionsTable) {
+    Set<BuildConfiguration> allConfigurations = new LinkedHashSet<>();
+    allConfigurations.add(targetConfiguration);
+    allConfigurations.add(dataConfiguration);
+    allConfigurations.add(hostConfiguration);
+    allConfigurations.addAll(splitTransitionsTable.values());
 
     Table<BuildConfiguration, Transition, ConfigurationHolder> transitionBuilder =
         HashBasedTable.create();
@@ -177,7 +228,13 @@ public class BazelConfigurationCollection implements ConfigurationCollectionFact
 
     for (BuildConfiguration config : allConfigurations) {
       Transitions outgoingTransitions =
-          new BuildConfigurationCollection.Transitions(config, transitionBuilder.row(config));
+          new BazelTransitions(config, transitionBuilder.row(config),
+              // Split transitions must not have their own split transitions because then they
+              // would be applied twice due to a quirk in DependencyResolver. See the comment in
+              // DependencyResolver.resolveLateBoundAttributes().
+              splitTransitionsTable.values().contains(config)
+                  ? ImmutableListMultimap.<SplitTransition<?>, BuildConfiguration>of()
+                  : splitTransitionsTable);
       // We allow host configurations to be shared between target configurations. In that case, the
       // transitions may already be set.
       // TODO(bazel-team): Check that the transitions are identical, or even better, change the
@@ -208,24 +265,33 @@ public class BazelConfigurationCollection implements ConfigurationCollectionFact
     }
   }
 
-  private void collectTransitiveClosure(PackageProviderForConfigurations loadedPackageProvider,
+  private void collectTransitiveClosure(PackageProviderForConfigurations packageProvider,
       Set<Label> reachableLabels, Label from) throws NoSuchThingException {
     if (!reachableLabels.add(from)) {
       return;
     }
-    Target fromTarget = loadedPackageProvider.getLoadedTarget(from);
+    Target fromTarget = packageProvider.getTarget(from);
     if (fromTarget instanceof Rule) {
       Rule rule = (Rule) fromTarget;
-      if (rule.getRuleClassObject().hasAttr("srcs", Type.LABEL_LIST)) {
+      if (rule.getRuleClassObject().hasAttr("srcs", BuildType.LABEL_LIST)) {
         // TODO(bazel-team): refine this. This visits "srcs" reachable under *any* configuration,
         // not necessarily the configuration actually applied to the rule. We should correlate the
         // two. However, doing so requires faithfully reflecting the configuration transitions that
         // might happen as we traverse the dependency chain.
+        // TODO(bazel-team): Why don't we use AbstractAttributeMapper#visitLabels() here?
         for (List<Label> labelsForConfiguration :
-            AggregatingAttributeMapper.of(rule).visitAttribute("srcs", Type.LABEL_LIST)) {
+            AggregatingAttributeMapper.of(rule).visitAttribute("srcs", BuildType.LABEL_LIST)) {
           for (Label label : labelsForConfiguration) {
-            collectTransitiveClosure(loadedPackageProvider, reachableLabels, label);
+            collectTransitiveClosure(packageProvider, reachableLabels,
+                from.resolveRepositoryRelative(label));
           }
+        }
+      }
+
+      if (rule.getRuleClass().equals("bind")) {
+        Label actual = AggregatingAttributeMapper.of(rule).get("actual", BuildType.LABEL);
+        if (actual != null) {
+          collectTransitiveClosure(packageProvider, reachableLabels, actual);
         }
       }
     }

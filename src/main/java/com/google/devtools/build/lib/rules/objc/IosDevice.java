@@ -1,4 +1,4 @@
-// Copyright 2015 Google Inc. All rights reserved.
+// Copyright 2015 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,13 +14,14 @@
 
 package com.google.devtools.build.lib.rules.objc;
 
-import static com.google.devtools.build.lib.packages.Type.STRING;
+import static com.google.devtools.build.lib.syntax.Type.STRING;
 
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
 import com.google.devtools.build.lib.rules.RuleConfiguredTargetFactory;
+import com.google.devtools.build.lib.rules.apple.DottedVersion;
 
 /**
  * Implementation for the "ios_device" rule.
@@ -28,11 +29,13 @@ import com.google.devtools.build.lib.rules.RuleConfiguredTargetFactory;
 public final class IosDevice implements RuleConfiguredTargetFactory {
   @Override
   public ConfiguredTarget create(RuleContext context) throws InterruptedException {
-    IosDeviceProvider provider = new IosDeviceProvider.Builder()
-        .setType(context.attributes().get("type", STRING))
-        .setIosVersion(context.attributes().get("ios_version", STRING))
-        .setLocale(context.attributes().get("locale", STRING))
-        .build();
+    IosDeviceProvider provider =
+        new IosDeviceProvider.Builder()
+            .setType(context.attributes().get("type", STRING))
+            .setIosVersion(
+                DottedVersion.fromString(context.attributes().get("ios_version", STRING)))
+            .setLocale(context.attributes().get("locale", STRING))
+            .build();
 
     return new RuleConfiguredTargetBuilder(context)
         .add(RunfilesProvider.class, RunfilesProvider.EMPTY)

@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,14 +15,20 @@
 package com.google.devtools.build.lib.analysis.config;
 
 import static com.google.devtools.build.lib.packages.Attribute.attr;
-import static com.google.devtools.build.lib.packages.Type.STRING_DICT;
+import static com.google.devtools.build.lib.syntax.Type.STRING_DICT;
 
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.analysis.BaseRuleClasses;
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
+import com.google.devtools.build.lib.packages.AttributeMap;
+import com.google.devtools.build.lib.packages.NonconfigurableAttributeMapper;
+import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.RuleClass;
-import com.google.devtools.build.lib.packages.Type;
+import com.google.devtools.build.lib.syntax.Type;
+
+import java.util.List;
+import java.util.Map;
 
 /**
  * Definitions for rule classes that specify or manipulate configuration settings.
@@ -92,6 +98,11 @@ public class ConfigRuleClasses {
    */
   public static final class ConfigSettingRule implements RuleDefinition {
     /**
+     * The name of this rule.
+     */
+    public static final String RULE_NAME = "config_setting";
+
+    /**
      * The name of the attribute that declares flag bindings.
      */
     public static final String SETTINGS_ATTRIBUTE = "values";
@@ -142,11 +153,54 @@ public class ConfigRuleClasses {
     @Override
     public Metadata getMetadata() {
       return RuleDefinition.Metadata.builder()
-          .name("config_setting")
+          .name(RULE_NAME)
           .type(RuleClass.Builder.RuleClassType.NORMAL)
           .ancestors(ConfigBaseRule.class)
           .factoryClass(ConfigSetting.class)
           .build();
+    }
+
+    /**
+     * config_setting can't use {@link RuleClass.Builder#requiresConfigurationFragments} because
+     * config_setting's dependencies come from option names as strings. This special override
+     * computes that properly.
+     */
+    public static List<Class<? extends BuildConfiguration.Fragment>> requiresConfigurationFragments(
+        Rule rule, Map<String, Class<? extends BuildConfiguration.Fragment>> optionsToFragmentMap) {
+      ImmutableList.Builder<Class<? extends BuildConfiguration.Fragment>> builder =
+          ImmutableList.builder();
+      AttributeMap attributes = NonconfigurableAttributeMapper.of(rule);
+      for (String optionName : attributes.get(SETTINGS_ATTRIBUTE, Type.STRING_DICT).keySet()) {
+        if (optionName.equals("cpu")) {
+          // The "cpu" flag is special: it's defined in BuildConfiguration.Options but its value
+          // is set in CppConfiguration (which reads a CROSSTOOL to determine that value).
+          // So this requires a special mapping.
+          builder.add(getCppConfiguration(optionsToFragmentMap.values()));
+        } else {
+          Class<? extends BuildConfiguration.Fragment> value = optionsToFragmentMap.get(optionName);
+          // Null values come from BuildConfiguration.Options, which is implicitly included.
+          if (value != null) {
+            builder.add(value);
+          }
+        }
+      }
+      return builder.build();
+    }
+
+    /**
+     * We can't directly reference CppConfiguration.class because it's in a different Bazel library.
+     * While we could add that library as a dep, that would bring in a bunch of unnecessary C++ and
+     * crosstool code to what's otherwise a language-agnostic library. So we use a bit of
+     * introspection instead.
+     */
+    private static Class<? extends BuildConfiguration.Fragment> getCppConfiguration(
+        Iterable<Class<? extends BuildConfiguration.Fragment>> configs) {
+      for (Class<? extends BuildConfiguration.Fragment> clazz : configs) {
+        if (clazz.getSimpleName().equals("CppConfiguration")) {
+          return clazz;
+        }
+      }
+      throw new IllegalStateException("Couldn't find the C++ fragment");
     }
   }
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2015 Google Inc. All rights reserved.
+# Copyright 2015 The Bazel Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ mkdir -p "$base_workspace"
 rm -f "${base_workspace}/tools" && ln -s "$(pwd)/tools" "${base_workspace}/tools"
 rm -f "${base_workspace}/third_party" && ln -s "$(pwd)/third_party" "${base_workspace}/third_party"
 rm -f "${base_workspace}/examples" && ln -s "$(pwd)/examples" "${base_workspace}/examples"
+rm -rf "${base_workspace}/src"
 
 # Create a bazelrc file with the base_workspace directory in the package path.
 bazelrc='build --package_path %workspace%:'${base_workspace}

@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,17 +29,19 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.actions.CommandLine;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.CollectionUtils;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.FeatureConfiguration;
 import com.google.devtools.build.lib.rules.cpp.Link.LinkStaticness;
 import com.google.devtools.build.lib.rules.cpp.Link.LinkTargetType;
-import com.google.devtools.build.lib.syntax.Label;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.ShellEscaper;
 import com.google.devtools.build.lib.vfs.PathFragment;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -58,7 +60,10 @@ public final class LinkCommandLine extends CommandLine {
   private final BuildConfiguration configuration;
   private final CppConfiguration cppConfiguration;
   private final ActionOwner owner;
-  private final Artifact output;
+  private final CcToolchainFeatures.Variables variables;
+  // The feature config can be null for tests.
+  @Nullable private final FeatureConfiguration featureConfiguration;
+  @Nullable private final Artifact output;
   @Nullable private final Artifact interfaceOutput;
   @Nullable private final Artifact symbolCountsOutput;
   private final ImmutableList<Artifact> buildInfoHeaderArtifacts;
@@ -74,8 +79,16 @@ public final class LinkCommandLine extends CommandLine {
   private final boolean nativeDeps;
   private final boolean useTestOnlyFlags;
   private final boolean needWholeArchive;
-  private final PathFragment paramFileExecPath;
+
+  @Nullable private final Iterable<LTOBackendArtifacts> allLTOArtifacts;
+  @Nullable private final Artifact paramFile;
   @Nullable private final Artifact interfaceSoBuilder;
+
+  /**
+   * A string constant for the c++ link action, used to access the feature
+   * configuration.
+   */
+  public static final String CPP_LINK = "c++-link";
 
   private LinkCommandLine(
       BuildConfiguration configuration,
@@ -96,8 +109,11 @@ public final class LinkCommandLine extends CommandLine {
       boolean nativeDeps,
       boolean useTestOnlyFlags,
       boolean needWholeArchive,
-      PathFragment paramFileFragment,
-      Artifact interfaceSoBuilder) {
+      @Nullable Iterable<LTOBackendArtifacts> allLTOArtifacts,
+      @Nullable Artifact paramFile,
+      Artifact interfaceSoBuilder,
+      CcToolchainFeatures.Variables variables,
+      @Nullable FeatureConfiguration featureConfiguration) {
     Preconditions.checkArgument(linkTargetType != LinkTargetType.INTERFACE_DYNAMIC_LIBRARY,
         "you can't link an interface dynamic library directly");
     if (linkTargetType != LinkTargetType.DYNAMIC_LIBRARY) {
@@ -123,9 +139,15 @@ public final class LinkCommandLine extends CommandLine {
 
     this.configuration = Preconditions.checkNotNull(configuration);
     this.cppConfiguration = configuration.getFragment(CppConfiguration.class);
+    this.variables = variables;
+    this.featureConfiguration = featureConfiguration;
     this.owner = Preconditions.checkNotNull(owner);
-    this.output = Preconditions.checkNotNull(output);
+    this.output = output;
     this.interfaceOutput = interfaceOutput;
+    if (interfaceOutput != null) {
+      Preconditions.checkNotNull(this.output);
+    }
+
     this.symbolCountsOutput = symbolCountsOutput;
     this.buildInfoHeaderArtifacts = Preconditions.checkNotNull(buildInfoHeaderArtifacts);
     this.linkerInputs = Preconditions.checkNotNull(linkerInputs);
@@ -143,7 +165,9 @@ public final class LinkCommandLine extends CommandLine {
     this.nativeDeps = nativeDeps;
     this.useTestOnlyFlags = useTestOnlyFlags;
     this.needWholeArchive = needWholeArchive;
-    this.paramFileExecPath = paramFileFragment;
+    this.allLTOArtifacts = allLTOArtifacts;
+    this.paramFile = paramFile;
+
     // For now, silently ignore interfaceSoBuilder if we don't build an interface dynamic library.
     this.interfaceSoBuilder =
         ((linkTargetType == LinkTargetType.DYNAMIC_LIBRARY) && (interfaceOutput != null))
@@ -157,7 +181,8 @@ public final class LinkCommandLine extends CommandLine {
    * non-null if {@link #getLinkTargetType} is {@code DYNAMIC_LIBRARY} and an interface shared
    * object was requested.
    */
-  @Nullable public Artifact getInterfaceOutput() {
+  @Nullable
+  public Artifact getInterfaceOutput() {
     return interfaceOutput;
   }
 
@@ -168,6 +193,11 @@ public final class LinkCommandLine extends CommandLine {
    */
   @Nullable public Artifact getSymbolCountsOutput() {
     return symbolCountsOutput;
+  }
+
+  @Nullable
+  public Artifact getParamFile() {
+    return paramFile;
   }
 
   /**
@@ -250,14 +280,13 @@ public final class LinkCommandLine extends CommandLine {
 
   /**
    * Splits the link command-line into a part to be written to a parameter file, and the remaining
-   * actual command line to be executed (which references the parameter file). Call {@link
-   * #canBeSplit} first to check if the command-line can be split.
+   * actual command line to be executed (which references the parameter file). Should only be used
+   * if getParamFile() is not null.
    *
    * @throws IllegalStateException if the command-line cannot be split
    */
   @VisibleForTesting
   final Pair<List<String>, List<String>> splitCommandline() {
-    Preconditions.checkState(canBeSplit());
     List<String> args = getRawLinkArgv();
     if (linkTargetType.isStaticLibraryLink()) {
       // Ar link commands can also generate huge command lines.
@@ -265,7 +294,7 @@ public final class LinkCommandLine extends CommandLine {
       List<String> commandlineArgs = new ArrayList<>();
       commandlineArgs.add(args.get(0));
 
-      commandlineArgs.add("@" + paramFileExecPath.getPathString());
+      commandlineArgs.add("@" + paramFile.getExecPath().getPathString());
       return Pair.of(commandlineArgs, paramFileArgs);
     } else {
       // Gcc link commands tend to generate humongous commandlines for some targets, which may
@@ -275,7 +304,7 @@ public final class LinkCommandLine extends CommandLine {
       List<String> commandlineArgs = new ArrayList<>();
       extractArgumentsForParamFile(args, commandlineArgs, paramFileArgs);
 
-      commandlineArgs.add("-Wl,@" + paramFileExecPath.getPathString());
+      commandlineArgs.add("-Wl,@" + paramFile.getExecPath().getPathString());
       return Pair.of(commandlineArgs, paramFileArgs);
     }
   }
@@ -286,7 +315,7 @@ public final class LinkCommandLine extends CommandLine {
    * @throws IllegalStateException if the command-line cannot be split
    */
   CommandLine paramCmdLine() {
-    Preconditions.checkState(canBeSplit());
+    Preconditions.checkNotNull(paramFile);
     return new CommandLine() {
       @Override
       public Iterable<String> arguments() {
@@ -295,25 +324,6 @@ public final class LinkCommandLine extends CommandLine {
     };
   }
 
-  boolean canBeSplit() {
-    if (paramFileExecPath == null) {
-      return false;
-    }
-    switch (linkTargetType) {
-      // We currently can't split dynamic library links if they have interface outputs. That was
-      // probably an unintended side effect of the change that introduced interface outputs.
-      case DYNAMIC_LIBRARY:
-        return interfaceOutput == null;
-      case EXECUTABLE:
-      case STATIC_LIBRARY:
-      case PIC_STATIC_LIBRARY:
-      case ALWAYS_LINK_STATIC_LIBRARY:
-      case ALWAYS_LINK_PIC_STATIC_LIBRARY:
-        return true;
-      default:
-        return false;
-    }
-  }
 
   private static void extractArgumentsForParamFile(List<String> args, List<String> commandlineArgs,
       List<String> paramFileArgs) {
@@ -405,8 +415,7 @@ public final class LinkCommandLine extends CommandLine {
         argv.addAll(
             cppConfiguration.getArFlags(cppConfiguration.archiveType() == Link.ArchiveType.THIN));
         argv.add(output.getExecPathString());
-        addInputFileLinkOptions(argv, /*needWholeArchive=*/false,
-            /*includeLinkopts=*/false);
+        addInputFileLinkOptions(argv, /*needWholeArchive=*/false);
         break;
 
       default:
@@ -419,6 +428,19 @@ public final class LinkCommandLine extends CommandLine {
     }
 
     return argv;
+  }
+
+  List<String> getCommandLine() {
+    List<String> commandlineArgs;
+    // Try to shorten the command line by use of a parameter file.
+    // This makes the output with --subcommands (et al) more readable.
+    if (paramFile != null) {
+      Pair<List<String>, List<String>> split = splitCommandline();
+      commandlineArgs = split.first;
+    } else {
+      commandlineArgs = getRawLinkArgv();
+    }
+    return finalizeWithLinkstampCommands(commandlineArgs);
   }
 
   @Override
@@ -623,13 +645,27 @@ public final class LinkCommandLine extends CommandLine {
           && linkTargetType == LinkTargetType.EXECUTABLE
           && cppConfiguration.skipStaticOutputs()) {
         // Linked binary goes to /dev/null; bogus dependency info in its place.
-        Collections.addAll(argv, "/dev/null", "-MMD", "-MF", execpath);  // thanks Ambrose
+        Collections.addAll(argv, "/dev/null", "-MMD", "-MF", execpath);
       } else {
         argv.add(execpath);
       }
     }
 
-    addInputFileLinkOptions(argv, needWholeArchive, /*includeLinkopts=*/true);
+    addInputFileLinkOptions(argv, needWholeArchive);
+
+    /*
+     * For backwards compatibility, linkopts come _after_ inputFiles.
+     * This is needed to allow linkopts to contain libraries and
+     * positional library-related options such as
+     *    -Wl,--begin-group -lfoo -lbar -Wl,--end-group
+     * or
+     *    -Wl,--as-needed -lfoo -Wl,--no-as-needed
+     *
+     * As for the relative order of the three different flavours of linkopts
+     * (global defaults, per-target linkopts, and command-line linkopts),
+     * we have no idea what the right order should be, or if anyone cares.
+     */
+    argv.addAll(linkopts);
 
     // Extra toolchain link options based on the output's link staticness.
     if (fullyStatic) {
@@ -645,16 +681,15 @@ public final class LinkCommandLine extends CommandLine {
       argv.addAll(cppConfiguration.getTestOnlyLinkOptions());
     }
 
-    if (configuration.isCodeCoverageEnabled()) {
-      argv.add("-lgcov");
-    }
-
     if (linkTargetType == LinkTargetType.EXECUTABLE && cppConfiguration.forcePic()) {
       argv.add("-pie");
     }
 
     argv.addAll(cppConfiguration.getLinkOptions());
-    argv.addAll(cppConfiguration.getFdoSupport().getLinkOptions());
+    // The feature config can be null for tests.
+    if (featureConfiguration != null) {
+      argv.addAll(featureConfiguration.getCommandLine(CPP_LINK, variables));
+    }
   }
 
   private static boolean isDynamicLibrary(LinkerInput linkInput) {
@@ -676,8 +711,7 @@ public final class LinkCommandLine extends CommandLine {
    * library objects (.lo) need to be wrapped with -Wl,-whole-archive and
    * -Wl,-no-whole-archive.
    */
-  private void addInputFileLinkOptions(List<String> argv, boolean globalNeedWholeArchive,
-      boolean includeLinkopts) {
+  private void addInputFileLinkOptions(List<String> argv, boolean globalNeedWholeArchive) {
     // The Apple ld doesn't support -whole-archive/-no-whole-archive. It
     // does have -all_load/-noall_load, but -all_load is a global setting
     // that affects all subsequent files, and -noall_load is simply ignored.
@@ -763,6 +797,23 @@ public final class LinkCommandLine extends CommandLine {
 
     boolean includeSolibDir = false;
 
+
+    Map<Artifact, Artifact> ltoMap = null;
+    if (allLTOArtifacts != null) {
+      // TODO(bazel-team): The LTO final link can only work if there are individual .o files on the
+      // command line. Rather than crashing, this should issue a nice error. We will get this by
+      // 1) moving supports_start_end_lib to a toolchain feature
+      // 2) having thin_lto require start_end_lib
+      // As a bonus, we can rephrase --nostart_end_lib as --features=-start_end_lib and get rid
+      // of a command line option.
+
+      Preconditions.checkState(cppConfiguration.useStartEndLib());
+      ltoMap = new HashMap<>();
+      for (LTOBackendArtifacts l : allLTOArtifacts) {
+        ltoMap.put(l.getBitcodeFile(), l.getObjectFile());
+      }
+    }
+
     for (LinkerInput input : getLinkerInputs()) {
       if (isDynamicLibrary(input)) {
         PathFragment libDir = input.getArtifact().getExecPath().getParentDirectory();
@@ -774,7 +825,7 @@ public final class LinkCommandLine extends CommandLine {
         }
         addDynamicInputLinkOptions(input, linkerInputs, libOpts, solibDir, rpathRoot);
       } else {
-        addStaticInputLinkOptions(input, linkerInputs);
+        addStaticInputLinkOptions(input, linkerInputs, ltoMap);
       }
     }
 
@@ -792,7 +843,7 @@ public final class LinkCommandLine extends CommandLine {
         includeRuntimeSolibDir = true;
         addDynamicInputLinkOptions(input, optionsList, libOpts, solibDir, rpathRoot);
       } else {
-        addStaticInputLinkOptions(input, optionsList);
+        addStaticInputLinkOptions(input, optionsList, ltoMap);
       }
     }
 
@@ -821,20 +872,9 @@ public final class LinkCommandLine extends CommandLine {
       argv.addAll(noWholeArchiveInputs);
     }
 
-    if (includeLinkopts) {
-      /*
-       * For backwards compatibility, linkopts come _after_ inputFiles.
-       * This is needed to allow linkopts to contain libraries and
-       * positional library-related options such as
-       *    -Wl,--begin-group -lfoo -lbar -Wl,--end-group
-       * or
-       *    -Wl,--as-needed -lfoo -Wl,--no-as-needed
-       *
-       * As for the relative order of the three different flavours of linkopts
-       * (global defaults, per-target linkopts, and command-line linkopts),
-       * we have no idea what the right order should be, or if anyone cares.
-       */
-      argv.addAll(linkopts);
+    if (ltoMap != null) {
+      Preconditions.checkState(
+          ltoMap.size() == 0, "Still have LTO objects left: %s, command-line: %s", ltoMap, argv);
     }
   }
 
@@ -867,7 +907,7 @@ public final class LinkCommandLine extends CommandLine {
 
     String name = inputArtifact.getFilename();
     if (CppFileTypes.SHARED_LIBRARY.matches(name)) {
-      String libName = name.replaceAll("(^lib|\\.so$)", "");
+      String libName = name.replaceAll("(^lib|\\.(so|dylib)$)", "");
       options.add("-l" + libName);
     } else {
       // Interface shared objects have a non-standard extension
@@ -881,8 +921,12 @@ public final class LinkCommandLine extends CommandLine {
   /**
    * Adds command-line options for a static library or non-library input
    * into options.
+   *
+   * @param ltoMap is a mutable list of exec paths that should be on the command-line, which
+   *    must be supplied for LTO final links.
    */
-  private void addStaticInputLinkOptions(LinkerInput input, List<String> options) {
+  private void addStaticInputLinkOptions(
+      LinkerInput input, List<String> options, @Nullable Map<Artifact, Artifact> ltoMap) {
     Preconditions.checkState(!isDynamicLibrary(input));
 
     // start-lib/end-lib library: adds its input object files.
@@ -891,13 +935,32 @@ public final class LinkCommandLine extends CommandLine {
       if (!Iterables.isEmpty(archiveMembers)) {
         options.add("-Wl,--start-lib");
         for (Artifact member : archiveMembers) {
+          if (ltoMap != null) {
+            Artifact backend = ltoMap.remove(member);
+
+            if (backend != null) {
+              // If the backend artifact is missing, we can't print a warning because this may
+              // happen normally, due libraries that list .o files explicitly, or generate .o
+              // files from assembler.
+              member = backend;
+            }
+          }
+
           options.add(member.getExecPathString());
         }
         options.add("-Wl,--end-lib");
       }
-    // For anything else, add the input directly.
     } else {
+      // For anything else, add the input directly.
       Artifact inputArtifact = input.getArtifact();
+
+      if (ltoMap != null) {
+        Artifact ltoArtifact = ltoMap.remove(inputArtifact);
+        if (ltoArtifact != null) {
+          inputArtifact = ltoArtifact;
+        }
+      }
+
       if (input.isFake()) {
         options.add(Link.FAKE_OBJECT_PREFIX + inputArtifact.getExecPathString());
       } else {
@@ -929,6 +992,7 @@ public final class LinkCommandLine extends CommandLine {
 
     private final BuildConfiguration configuration;
     private final ActionOwner owner;
+    @Nullable private final RuleContext ruleContext;
 
     @Nullable private Artifact output;
     @Nullable private Artifact interfaceOutput;
@@ -946,16 +1010,23 @@ public final class LinkCommandLine extends CommandLine {
     private boolean nativeDeps;
     private boolean useTestOnlyFlags;
     private boolean needWholeArchive;
-    private PathFragment paramFileFragment;
+    @Nullable private Iterable<LTOBackendArtifacts> allLTOBackendArtifacts;
+    @Nullable private Artifact paramFile;
     @Nullable private Artifact interfaceSoBuilder;
+    @Nullable private CcToolchainProvider toolchain;
 
-    public Builder(BuildConfiguration configuration, ActionOwner owner) {
+    // This interface is needed to support tests that don't create a
+    // ruleContext, in which case the configuration and action owner
+    // cannot be accessed off of the give ruleContext.
+    public Builder(BuildConfiguration configuration, ActionOwner owner,
+        @Nullable RuleContext ruleContext) {
       this.configuration = configuration;
       this.owner = owner;
+      this.ruleContext = ruleContext;
     }
 
     public Builder(RuleContext ruleContext) {
-      this(ruleContext.getConfiguration(), ruleContext.getActionOwner());
+      this(ruleContext.getConfiguration(), ruleContext.getActionOwner(), ruleContext);
     }
 
     public LinkCommandLine build() {
@@ -966,11 +1037,54 @@ public final class LinkCommandLine extends CommandLine {
         actualLinkstampCompileOptions = ImmutableList.copyOf(
             Iterables.concat(DEFAULT_LINKSTAMP_OPTIONS, linkstampCompileOptions));
       }
-      return new LinkCommandLine(configuration, owner, output, interfaceOutput,
-          symbolCountsOutput, buildInfoHeaderArtifacts, linkerInputs, runtimeInputs, linkTargetType,
-          linkStaticness, linkopts, features, linkstamps, actualLinkstampCompileOptions,
-          runtimeSolibDir, nativeDeps, useTestOnlyFlags, needWholeArchive, paramFileFragment,
-          interfaceSoBuilder);
+      CcToolchainFeatures.Variables variables = null;
+      FeatureConfiguration featureConfiguration = null;
+      // The ruleContext can be null for some tests.
+      if (ruleContext != null) {
+        if (toolchain != null) {
+          featureConfiguration = CcCommon.configureFeatures(ruleContext, toolchain);
+        } else {
+          featureConfiguration = CcCommon.configureFeatures(ruleContext);
+        }
+        CcToolchainFeatures.Variables.Builder buildVariables =
+            new CcToolchainFeatures.Variables.Builder();
+        CppConfiguration cppConfiguration = ruleContext.getFragment(CppConfiguration.class);
+        cppConfiguration.getFdoSupport().getLinkOptions(featureConfiguration, buildVariables);
+        variables = buildVariables.build();
+      }
+      return new LinkCommandLine(
+          configuration,
+          owner,
+          output,
+          interfaceOutput,
+          symbolCountsOutput,
+          buildInfoHeaderArtifacts,
+          linkerInputs,
+          runtimeInputs,
+          linkTargetType,
+          linkStaticness,
+          linkopts,
+          features,
+          linkstamps,
+          actualLinkstampCompileOptions,
+          runtimeSolibDir,
+          nativeDeps,
+          useTestOnlyFlags,
+          needWholeArchive,
+          allLTOBackendArtifacts,
+          paramFile,
+          interfaceSoBuilder,
+          variables,
+          featureConfiguration);
+    }
+
+    /**
+     * Sets the toolchain to use for link flags. If this is not called, the toolchain
+     * is retrieved from the rule.
+     */
+    public Builder setToolchain(CcToolchainProvider toolchain) {
+      this.toolchain = toolchain;
+      return this;
     }
 
     /**
@@ -1131,8 +1245,13 @@ public final class LinkCommandLine extends CommandLine {
       return this;
     }
 
-    public Builder setParamFileFragment(PathFragment paramFragment) {
-      this.paramFileFragment = paramFragment;
+    public Builder setParamFile(Artifact paramFile) {
+      this.paramFile = paramFile;
+      return this;
+    }
+
+    public Builder setAllLTOArtifacts(Iterable<LTOBackendArtifacts> allLTOArtifacts) {
+      this.allLTOBackendArtifacts = allLTOArtifacts;
       return this;
     }
   }

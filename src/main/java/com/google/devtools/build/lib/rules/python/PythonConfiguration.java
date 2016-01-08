@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,11 +29,6 @@ public class PythonConfiguration extends BuildConfiguration.Fragment {
     this.defaultPythonVersion = pythonVersion;
   }
 
-  @Override
-  public String getName() {
-    return "Python";
-  }
-
   /**
    * Returns the Python version (PY2 or PY3) this configuration uses.
    */
@@ -49,11 +44,6 @@ public class PythonConfiguration extends BuildConfiguration.Fragment {
     return ignorePythonVersionAttribute || attributeVersion == null
         ? defaultPythonVersion
         : attributeVersion;
-  }
-
-  @Override
-  public String cacheKey() {
-    return defaultPythonVersion.toString();
   }
 
   @Override

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2015 Google Inc. All rights reserved.
+# Copyright 2015 The Bazel Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,11 +20,23 @@ PROTO_FILES=$(ls src/main/protobuf/*.proto)
 LIBRARY_JARS=$(find third_party -name '*.jar' | tr "\n" " ")
 DIRS=$(echo src/{java_tools/singlejar/java/com/google/devtools/build/zip,main/java,tools/xcode-common/java/com/google/devtools/build/xcode/{common,util}} ${OUTPUT_DIR}/src)
 
+case "${PLATFORM}" in
+msys*|mingw*)
+  BLAZE_UTIL_SUFFIX=mingw
+  BLAZE_UTIL_POSIX=""
+  ;;
+*)
+  BLAZE_UTIL_SUFFIX="${PLATFORM}"
+  BLAZE_UTIL_POSIX="src/main/cpp/blaze_util_posix.cc"
+  ;;
+esac
+
 BLAZE_CC_FILES=(
 src/main/cpp/blaze_startup_options.cc
 src/main/cpp/blaze_startup_options_common.cc
 src/main/cpp/blaze_util.cc
-src/main/cpp/blaze_util_${PLATFORM}.cc
+src/main/cpp/blaze_util_${BLAZE_UTIL_SUFFIX}.cc
+${BLAZE_UTIL_POSIX}
 src/main/cpp/blaze.cc
 src/main/cpp/option_processor.cc
 src/main/cpp/util/errors.cc
@@ -56,8 +68,13 @@ LDFLAGS="$LDFLAGS"
 ZIPOPTS="$ZIPOPTS"
 
 # TODO: CC target architecture needs to match JAVA_HOME.
-CC=${CC:-gcc}
-CXX=${CXX:-g++}
+if [ "${PLATFORM}" = "freebsd" ]; then
+  CC=${CC:-clang}
+  CXX=${CXX:-clang++}
+else
+  CC=${CC:-gcc}
+  CXX=${CXX:-g++}
+fi
 CXXSTD="c++0x"
 
 unset JAVA_TOOL_OPTIONS
@@ -81,8 +98,24 @@ linux)
   if [ "${MACHINE_IS_64BIT}" = 'yes' ]; then
     PROTOC=${PROTOC:-third_party/protobuf/protoc-linux-x86_64.exe}
   else
-    PROTOC=${PROTOC:-third_party/protobuf/protoc-linux-x86_32.exe}
+    if [ "${MACHINE_IS_ARM}" = 'yes' ]; then
+      PROTOC=${PROTOC:-third_party/protobuf/protoc-linux-arm32.exe}
+    else
+      PROTOC=${PROTOC:-third_party/protobuf/protoc-linux-x86_32.exe}
+    fi
   fi
+  ;;
+
+freebsd)
+  LDFLAGS="-lprocstat -lz -lrt $LDFLAGS"
+  JNILIB="libunix.so"
+  MD5SUM="md5"
+  # JAVA_HOME must point to a Java installation.
+  JAVA_HOME="${JAVA_HOME:-/usr/local/openjdk8}"
+  # Note: the linux protoc binary works on freebsd using linux emulation.
+  # We choose the 32-bit version for maximum compatiblity since 64-bit
+  # linux binaries are only supported in FreeBSD-11.
+  PROTOC=${PROTOC:-third_party/protobuf/protoc-linux-x86_32.exe}
   ;;
 
 darwin)
@@ -113,7 +146,11 @@ msys*|mingw*)
   JAVA_HOME="${JAVA_HOME:-$(ls -d /c/Program\ Files/Java/jdk* | sort | tail -n 1)}"
   # We do not use the JNI library on Windows.
   JNILIB=""
-  PROTOC=${PROTOC:-protoc}
+  if [ "${MACHINE_IS_64BIT}" = 'yes' ]; then
+    PROTOC=${PROTOC:-third_party/protobuf/protoc-windows-x86_64.exe}
+  else
+    PROTOC=${PROTOC:-third_party/protobuf/protoc-windows-x86_32.exe}
+  fi
 
   # The newer version of GCC on msys is stricter and removes some important function
   # declarations from the environment if using c++0x / c++11.
@@ -134,22 +171,10 @@ esac
 [[ -x "${PROTOC-}" ]] \
     || fail "Protobuf compiler not found in ${PROTOC-}"
 
-test -z "$JAVA_HOME" && fail "JDK not found, please set \$JAVA_HOME."
-
-JAVAC="${JAVA_HOME}/bin/javac"
-
-[[ -x "${JAVAC}" ]] \
-    || fail "JAVA_HOME ($JAVA_HOME) is not a path to a working JDK."
-
 # Check that javac -version returns a upper version than $JAVA_VERSION.
-JAVAC_VERSION=$("${JAVAC}" -version 2>&1)
-if [[ "$JAVAC_VERSION" =~ ^"javac "(1\.([789]|[1-9][0-9])).*$ ]]; then
-  JAVAC_VERSION=${BASH_REMATCH[1]}
-  [ ${JAVA_VERSION#*.} -le ${JAVAC_VERSION#*.} ] || \
-     fail "JDK version (${JAVAC_VERSION}) is lower than ${JAVA_VERSION}, please set \$JAVA_HOME."
-else
-  fail "Cannot determine JDK version, please set \$JAVA_HOME."
-fi
+get_java_version
+[ ${JAVA_VERSION#*.} -le ${JAVAC_VERSION#*.} ] || \
+  fail "JDK version (${JAVAC_VERSION}) is lower than ${JAVA_VERSION}, please set \$JAVA_HOME."
 
 JAR="${JAVA_HOME}/bin/jar"
 
@@ -186,7 +211,7 @@ function java_compilation() {
 
   run_silent "${JAVAC}" -classpath "${classpath}" -sourcepath "${sourcepath}" \
       -d "${output}/classes" -source "$JAVA_VERSION" -target "$JAVA_VERSION" \
-      "@${paramfile}"
+      -encoding UTF-8 "@${paramfile}"
 
   log "Extracting helper classes for $name..."
   for f in ${library_jars} ; do
@@ -242,7 +267,7 @@ function cc_link() {
     local OBJ=$(basename "${FILE}").o
     FILES+=("${OUTPUT_DIR}/${OBJDIR}/${OBJ}")
   done
-  run_silent "${CXX}" -o ${OUTPUT} "${FILES[@]}" -lstdc++ ${LDFLAGS}
+  run_silent "${CXX}" -o ${OUTPUT} "${FILES[@]}" ${LDFLAGS}
 }
 
 function cc_build() {
@@ -271,7 +296,7 @@ if [ -z "${BAZEL_SKIP_JAVA_COMPILATION}" ]; then
   done
 
   create_deploy_jar "libblaze" "com.google.devtools.build.lib.bazel.BazelMain" \
-      ${OUTPUT_DIR} third_party/javascript
+      ${OUTPUT_DIR}
 fi
 
 cc_build "client" "objs" "${OUTPUT_DIR}/client" ${BLAZE_CC_FILES[@]}
@@ -295,27 +320,74 @@ if [ ! -z "$JNILIB" ] ; then
   done
 
   log "Linking ${JNILIB}..."
-  run_silent "${CXX}" -o ${OUTPUT_DIR}/${JNILIB} $JNI_LD_ARGS -shared ${OUTPUT_DIR}/native/*.o -l stdc++
+  run_silent "${CXX}" -o ${OUTPUT_DIR}/${JNILIB} $JNI_LD_ARGS -shared ${OUTPUT_DIR}/native/*.o -lstdc++
 fi
 
 log "Compiling build-runfiles..."
 # Clang on Linux requires libstdc++
-run_silent "${CXX}" -o ${OUTPUT_DIR}/build-runfiles -std=c++0x -l stdc++ src/main/tools/build-runfiles.cc
+run_silent "${CXX}" -o ${OUTPUT_DIR}/build-runfiles -std=c++0x src/main/tools/build-runfiles.cc -lstdc++ ${LDFLAGS}
 
 log "Compiling process-wrapper..."
-run_silent "${CC}" -o ${OUTPUT_DIR}/process-wrapper -std=c99 src/main/tools/process-wrapper.c
+run_silent "${CC}" -o ${OUTPUT_DIR}/process-wrapper -std=c99 src/main/tools/process-wrapper.c src/main/tools/process-tools.c -lm ${LDFLAGS}
+
+log "Compiling namespace-sandbox..."
+if [[ $PLATFORM == "linux" ]]; then
+  run_silent "${CC}" -o ${OUTPUT_DIR}/namespace-sandbox -std=c99 src/main/tools/namespace-sandbox.c src/main/tools/network-tools.c src/main/tools/process-tools.c -lm ${LDFLAGS}
+else
+  run_silent "${CC}" -o ${OUTPUT_DIR}/namespace-sandbox -std=c99 src/main/tools/namespace-sandbox-dummy.c -lm ${LDFLAGS}
+fi
 
 cp src/main/tools/build_interface_so ${OUTPUT_DIR}/build_interface_so
 cp src/main/tools/jdk.* ${OUTPUT_DIR}
 
 log "Creating Bazel self-extracting archive..."
-TO_ZIP="libblaze.jar ${JNILIB} build-runfiles${EXE_EXT} process-wrapper${EXE_EXT} build_interface_so ${MSYS_DLLS} jdk.BUILD"
+ARCHIVE_DIR=${OUTPUT_DIR}/archive
+for i in libblaze.jar ${JNILIB} build-runfiles${EXE_EXT} process-wrapper${EXE_EXT} namespace-sandbox${EXE_EXT} build_interface_so ${MSYS_DLLS} jdk.BUILD; do
+  mkdir -p $(dirname $ARCHIVE_DIR/$i);
+  cp $OUTPUT_DIR/$i $ARCHIVE_DIR/$i;
+done
 
-(cd ${OUTPUT_DIR}/ ; cat client ${TO_ZIP} | ${MD5SUM} | awk '{ print $1; }' > install_base_key)
-(cd ${OUTPUT_DIR}/ ; echo "${JAVA_VERSION}" > java.version)
-(cd ${OUTPUT_DIR}/ ; find . -type f | xargs -P 10 touch -t 198001010000)
-(cd ${OUTPUT_DIR}/ ; zip $ZIPOPTS -q package.zip ${TO_ZIP} install_base_key java.version)
-cat ${OUTPUT_DIR}/client ${OUTPUT_DIR}/package.zip > ${OUTPUT_DIR}/bazel
+# Build a crude embedded tools directory for the bootstrapped binary.
+# We simple shovel all of third_party and the tools directory into it. It's an
+# over-approximation, but that's fine, because the bootstrap binary is only used
+# for, well, bootstrapping and is never distributed anywhere.
+EMBEDDED_TOOLS=""
+for TOOL_DIR in third_party tools src/tools/android/java/com/google/devtools/build/android \
+  src/java_tools/buildjar/java/com/google/devtools/build/buildjar/jarhelper \
+  src/main/protobuf src/main/java/com/google/devtools/common/options; do
+  EMBEDDED_TOOLS="${EMBEDDED_TOOLS} "$(find ${TOOL_DIR} -type f)
+done
+
+for TOOL in ${EMBEDDED_TOOLS}; do
+  mkdir -p $(dirname ${ARCHIVE_DIR}/embedded_tools/${TOOL});
+  cp ${TOOL} ${ARCHIVE_DIR}/embedded_tools/${TOOL}
+done
+
+touch ${ARCHIVE_DIR}/embedded_tools/WORKSPACE
+
+mkdir -p ${ARCHIVE_DIR}/embedded_tools/src/main/java
+cat > ${ARCHIVE_DIR}/embedded_tools/src/main/java/BUILD <<EOF
+java_library(
+    name = "options",
+    srcs = glob([
+        "com/google/devtools/common/options/*.java",
+    ]),
+    visibility = ["//visibility:public"],
+    deps = [
+        "//third_party:guava",
+        "//third_party:jsr305",
+    ],
+)
+EOF
+
+cp ${OUTPUT_DIR}/client ${ARCHIVE_DIR}
+cp ${OUTPUT_DIR}/libblaze.jar ${ARCHIVE_DIR}/A-server.jar
+
+(cd ${ARCHIVE_DIR}/ ; find . -type f | xargs cat | ${MD5SUM} | awk '{ print $1; }' > install_base_key)
+(cd ${ARCHIVE_DIR}/ ; echo "${JAVA_VERSION}" > java.version)
+(cd ${ARCHIVE_DIR}/ ; find . -type f | xargs -P 10 touch -t 198001010000)
+(cd ${ARCHIVE_DIR}/ ; run_silent zip $ZIPOPTS -r -q package.zip * install_base_key java.version)
+cat ${OUTPUT_DIR}/client ${ARCHIVE_DIR}/package.zip > ${OUTPUT_DIR}/bazel
 zip -qA ${OUTPUT_DIR}/bazel \
   || echo "(Non-critical error, ignore.)"
 

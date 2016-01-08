@@ -4,27 +4,26 @@ layout: community
 
 # Contributing to Bazel
 
-If you wish to contribute, prefer using Gerrit over GitHub pull request. We
-might redirect you to Gerrit if you send us a non-trivial change in a GitHub
-Pull Request.
+<p class="lead">We welcome contributions! This page covers setting up your
+machine to develop Bazel and, when you've made a patch, how to submit it.</p>
 
 ## How can I contribute to Bazel?
 
-You should first read the [Bazel governance plan](governance.html). Then you can
-read this page that explains how to submit a patch to Bazel, as well as how to set-up
-and work on the Bazel code.
+In general, we prefer contributions that fix bugs or add features (as opposed to
+stylistic, refactoring, or "cleanup" changes). Please check with us on the
+[dev list](https://groups.google.com/forum/#!forum/bazel-dev) before investing
+a lot of time in a patch.
 
 ## Patch Acceptance Process
 
 <!-- Our markdown parser doesn't support nested lists. -->
 <ol>
+<li>Read the <a href="governance.html">Bazel governance plan</a>.</li>
 <li>Discuss your plan and design, and get agreement on our <a href="https://groups.google.com/forum/#!forum/bazel-dev">mailing list</a>.
 <li>Prepare a git commit that implements the feature. Don't forget to add tests.
 <li>Create a new code review on <a href="https://bazel-review.googlesource.com">Gerrit</a>
    by running:
-   <pre>
-$ git push https://bazel.googlesource.com/bazel HEAD:refs/for/master
-   </pre>
+   <pre>$ git push https://bazel.googlesource.com/bazel HEAD:refs/for/master</pre>
    Gerrit upload requires that you:
    <ul>
      <li>Have signed a
@@ -34,6 +33,8 @@ $ git push https://bazel.googlesource.com/bazel HEAD:refs/for/master
        the git hook and then you will need to run `git commit --amend` to add the
        line.
    </ul>
+   The HTTP password required by Gerrit can be obtained from your
+   <a href="https://bazel-review.googlesource.com/#/settings/http-password">Gerrit settings page</a>.
    See the
    <a href="https://gerrit-review.googlesource.com/Documentation/user-upload.html">Gerrit documentation</a>
    for more information about uploading changes.
@@ -45,11 +46,6 @@ $ git push https://bazel.googlesource.com/bazel HEAD:refs/for/master
 <li>The patch is exported as a Git commit, at which point the Gerrit code review
    is closed.
 </ol>
-
-We will make changes to this process as necessary, and we're hoping to move
-closer to a fully open development model in the future (also see
-[Is Bazel developed fully in the open?](governance.html#isbazelopen)).
-
 
 ## Setting up your coding environment
 
@@ -71,43 +67,49 @@ To work with IntelliJ, run `sh scripts/setup-intellij.sh` from the root of the
 source tree and it will create the necessary project files. You can then open
 the folder as a project in IntelliJ.
 
-### Compiling Bazel {#compile-bazel}
+<a name="compile-bazel"></a>
+### Compiling Bazel
 
-To test out bazel, you need to compile it. There is currently two ways of
+To test out bazel, you need to compile it. There are currently two ways of
 compiling it:
 
-* `sh compile.sh` build a Bazel binary without Bazel, it should only be used to
-  bootstrap Bazel itself. The resulting binary can be found at `output/bazel`.
+* `sh compile.sh` bootstraps Bazel from scratch, first compiling it without using
+  Bazel, then rebuilding it again using the just built Bazel and optionally runs
+  tests, too. The resulting binary can be found at `output/bazel`.
 * `bazel build //src:bazel` builds the Bazel binary using Bazel and the
-  resulting binary can be found at `bazel-bin/src/bazel`.
+  resulting binary can be found at `bazel-bin/src/bazel`. This is the recommended
+  way of rebuilding Bazel once you have bootstrapped it.
 
 In addition to the Bazel binary, you might want to build the various tools Bazel
 uses. They are located in `//src/java_tools`, `//src/objc_tools` and
-`//src/tools` and contains README files describing their respective
-utility.
+`//src/tools` and their directories contain README files describing their
+respective utility.
 
 When modifying Bazel, you want to make sure that the following still works:
 
 * Bootstrap test with `sh compile.sh all` after having removed the
   `output` directory: it rebuilds Bazel with `./compile.sh`, Bazel with the
   `compile.sh` Bazel and Bazel with the Bazel-built binary. It compares if the
-  constructed Bazel builts are identical and then run all bazel tests with
-  `bazel test //src/... //third_party/ijar/...`.
+  constructed Bazel builts are identical and then runs all bazel tests with
+  `bazel test //src/... //third_party/ijar/...`. This is what we use at Google
+  to ensure that we don't break Bazel when pushing new commits, too.
 
 ### Debugging Bazel
 
 Start creating a debug configuration for both C++ and Java in your bazelrc with the following:
 
+```
 build:debug -c dbg
 build:debug --javacopt="-g"
 build:debug --copt="-g"
 build:debug --strip="never"
+```
 
 Then you can rebuild Bazel with `bazel build --config debug //src:bazel` and use your favorite
 debugger to start debugging.
 
-For debugging the C++ client you can just fire it from gdb or lldb as you normally would.
-But if you want to debug the Java code, you must attach to the server with the following:
+For debugging the C++ client you can just run it from gdb or lldb as you normally would.
+But if you want to debug the Java code, you must attach to the server using the following:
 
 * Run Bazel with debugging option `--host_jvm_debug` before the
   command (e.g., `bazel --batch --host_jvm_debug build //src:bazel`).
@@ -115,15 +117,15 @@ But if you want to debug the Java code, you must attach to the server with the f
   run `jdb -attach localhost:5005`. From within Eclipse, use the
   [remote Java application launch
   configuration](http://help.eclipse.org/luna/index.jsp?topic=%2Forg.eclipse.jdt.doc.user%2Ftasks%2Ftask-remotejava_launch_config.htm).
+  For IntelliJ, you can refer to [Run/Debug Configuration: Remote](https://www.jetbrains.com/idea/help/run-debug-configuration-remote.html).
 
 ## Bazel's code description
 
 Bazel is organized in several parts:
 
-* A client code in C++ that talk to the server code in java and provide the
-  command-line interface. Its code is in `src/main/cpp`.
+* Client code in `src/main/cpp` provides the command-line interface.
 * Protocol buffers in `src/main/protobuf`.
-* The server code in Java (in `src/main/java` and `src/test/java`)
+* Server code in `src/main/java` and `src/test/java`.
   * Core code which is mostly composed of [SkyFrame](docs/skyframe.html) and some
     utilities.
   * [Skylark](docs/skylark/index.html) rules are defined in `tools/build_rules`.

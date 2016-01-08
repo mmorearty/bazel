@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2015 Google Inc. All rights reserved.
+# Copyright 2015 The Bazel Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,19 +32,21 @@ fi
 : ${JAVA_VERSION:="1.8"}
 : ${BAZEL_ARGS="--singlejar_top=//src/java_tools/singlejar:bootstrap_deploy.jar \
       --javabuilder_top=//src/java_tools/buildjar:bootstrap_deploy.jar \
-      --ijar_top=//third_party/ijar"}
+      --genclass_top=//src/java_tools/buildjar:bootstrap_genclass_deploy.jar \
+      --ijar_top=//third_party/ijar \
+      --strategy=Javac=worker --worker_quit_after_build"}
 
 function bazel_bootstrap() {
   local mode=${3:-"0644"}
   if [[ ! ${BAZEL_SKIP_TOOL_COMPILATION-} =~ "$2" ]]; then
     log "Building $2"
     if [ -n "${4-}" ]; then
-      ${BAZEL} --nomaster_blazerc --blazerc=${BAZELRC} \
+      ${BAZEL} --nomaster_bazelrc --bazelrc=${BAZELRC} \
           build ${BAZEL_ARGS} \
           --javacopt="-source ${JAVA_VERSION} -target ${JAVA_VERSION}" \
           "${EMBED_LABEL_ARG[@]}" $1
     else
-      run_silent ${BAZEL} --nomaster_blazerc --blazerc=${BAZELRC} \
+      run_silent ${BAZEL} --nomaster_bazelrc --bazelrc=${BAZELRC} \
           build ${BAZEL_ARGS} \
           --javacopt="-source ${JAVA_VERSION} -target ${JAVA_VERSION}" \
           "${EMBED_LABEL_ARG[@]}" $1
@@ -75,13 +77,15 @@ function get_outputs_sum() {
 function bootstrap_test() {
   local BAZEL_BIN=$1
   local BAZEL_SUM=$2
+  local BAZEL_TARGET=${3:-//src:bazel}
   [ -x "${BAZEL_BIN}" ] || fail "syntax: bootstrap bazel-binary"
-  run_silent ${BAZEL_BIN} --nomaster_blazerc --blazerc=${BAZELRC} clean \
-      || return $?
-  run_silent ${BAZEL_BIN} --nomaster_blazerc --blazerc=${BAZELRC} build \
+  run_silent ${BAZEL_BIN} --nomaster_bazelrc --bazelrc=${BAZELRC} clean \
+      --expunge || return $?
+  run_silent ${BAZEL_BIN} --nomaster_bazelrc --bazelrc=${BAZELRC} build \
+      ${BAZEL_ARGS} \
       --fetch --nostamp \
       --javacopt="-source ${JAVA_VERSION} -target ${JAVA_VERSION}" \
-      //src:bazel //src:tools || return $?
+      ${BAZEL_TARGET} || return $?
   if [ -n "${BAZEL_SUM}" ]; then
     cat bazel-genfiles/src/java.version >${BAZEL_SUM}
     get_outputs_sum >> ${BAZEL_SUM} || return $?
@@ -89,7 +93,8 @@ function bootstrap_test() {
   if [ -z "${BOOTSTRAP:-}" ]; then
     tempdir
     BOOTSTRAP=${NEW_TMPDIR}/bazel
-    cp -f bazel-bin/src/bazel $BOOTSTRAP
+    local FILE=bazel-bin/${BAZEL_TARGET##//}
+    cp -f ${FILE/:/\/} $BOOTSTRAP
     chmod +x $BOOTSTRAP
   fi
 }

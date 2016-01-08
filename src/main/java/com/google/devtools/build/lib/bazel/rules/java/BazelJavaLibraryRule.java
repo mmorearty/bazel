@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,16 +16,22 @@ package com.google.devtools.build.lib.bazel.rules.java;
 
 import static com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition.HOST;
 import static com.google.devtools.build.lib.packages.Attribute.attr;
-import static com.google.devtools.build.lib.packages.Type.BOOLEAN;
-import static com.google.devtools.build.lib.packages.Type.LABEL_LIST;
-import static com.google.devtools.build.lib.packages.Type.STRING_LIST;
+import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
+import static com.google.devtools.build.lib.syntax.Type.BOOLEAN;
+import static com.google.devtools.build.lib.syntax.Type.STRING_LIST;
 
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.analysis.RuleDefinitionEnvironment;
 import com.google.devtools.build.lib.bazel.rules.java.BazelJavaRuleClasses.JavaRule;
 import com.google.devtools.build.lib.packages.RuleClass;
 import com.google.devtools.build.lib.packages.RuleClass.Builder;
+import com.google.devtools.build.lib.rules.cpp.CppConfiguration;
+import com.google.devtools.build.lib.rules.java.J2ObjcConfiguration;
+import com.google.devtools.build.lib.rules.java.JavaCompilationArgsProvider;
+import com.google.devtools.build.lib.rules.java.JavaConfiguration;
 import com.google.devtools.build.lib.rules.java.JavaSourceInfoProvider;
+import com.google.devtools.build.lib.rules.java.Jvm;
+import com.google.devtools.build.lib.rules.java.ProguardLibraryRule;
 
 /**
  * Common attributes for Java rules.
@@ -35,6 +41,9 @@ public final class BazelJavaLibraryRule implements RuleDefinition {
   public RuleClass build(Builder builder, final RuleDefinitionEnvironment env) {
 
     return builder
+        .requiresConfigurationFragments(
+            JavaConfiguration.class, CppConfiguration.class, J2ObjcConfiguration.class)
+        .requiresHostConfigurationFragments(Jvm.class) // For BaseJavaCompilationHelper
         /* <!-- #BLAZE_RULE(java_library).IMPLICIT_OUTPUTS -->
         <ul>
           <li><code>lib<var>name</var>.jar</code>: A Java archive containing the class files.</li>
@@ -144,6 +153,7 @@ public final class BazelJavaLibraryRule implements RuleDefinition {
         .add(attr("exported_plugins", LABEL_LIST).cfg(HOST).allowedRuleClasses("java_plugin")
             .legacyAllowAnyFileType())
         .advertiseProvider(JavaSourceInfoProvider.class)
+        .advertiseProvider(JavaCompilationArgsProvider.class)
         .build();
   }
 
@@ -151,7 +161,7 @@ public final class BazelJavaLibraryRule implements RuleDefinition {
   public Metadata getMetadata() {
     return RuleDefinition.Metadata.builder()
         .name("java_library")
-        .ancestors(JavaRule.class)
+        .ancestors(JavaRule.class, ProguardLibraryRule.class)
         .factoryClass(BazelJavaLibrary.class)
         .build();
   }

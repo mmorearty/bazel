@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,9 +14,10 @@
 
 package com.google.devtools.build.lib.buildtool;
 
-import com.google.common.base.Objects;
+import com.google.common.base.MoreObjects;
 import com.google.common.base.Preconditions;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationCollection;
 import com.google.devtools.build.lib.util.ExitCode;
 
 import java.util.Collection;
@@ -35,6 +36,8 @@ public final class BuildResult {
   private Throwable crash = null;
   private boolean catastrophe = false;
   private ExitCode exitCondition = ExitCode.BLAZE_INTERNAL_ERROR;
+
+  private BuildConfigurationCollection configurations;
   private Collection<ConfiguredTarget> actualTargets;
   private Collection<ConfiguredTarget> testTargets;
   private Collection<ConfiguredTarget> successfulTargets;
@@ -118,6 +121,17 @@ public final class BuildResult {
     return crash;
   }
 
+  public void setBuildConfigurationCollection(BuildConfigurationCollection configurations) {
+    this.configurations = configurations;
+  }
+
+  /**
+   * Returns the build configuration collection used for the build.
+   */
+  public BuildConfigurationCollection getBuildConfigurationCollection() {
+    return configurations;
+  }
+
   /**
    * @see #getActualTargets
    */
@@ -179,10 +193,8 @@ public final class BuildResult {
 
   /** For debugging. */
   @Override
-  @SuppressWarnings("deprecation")
   public String toString() {
-    // We need to be compatible with Guava, so we use this, even though it is deprecated.
-    return Objects.toStringHelper(this)
+    return MoreObjects.toStringHelper(this)
         .add("startTimeMillis", startTimeMillis)
         .add("stopTimeMillis", stopTimeMillis)
         .add("crash", crash)

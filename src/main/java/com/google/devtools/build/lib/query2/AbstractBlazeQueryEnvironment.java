@@ -1,4 +1,4 @@
-// Copyright 2015 Google Inc. All rights reserved.
+// Copyright 2015 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,8 +16,10 @@ package com.google.devtools.build.lib.query2;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
-import com.google.devtools.build.lib.cmdline.ResolvedTargets;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.cmdline.TargetParsingException;
 import com.google.devtools.build.lib.events.ErrorSensingEventHandler;
 import com.google.devtools.build.lib.events.Event;
@@ -29,11 +31,12 @@ import com.google.devtools.build.lib.pkgcache.PackageProvider;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
 import com.google.devtools.build.lib.pkgcache.TargetPatternEvaluator;
 import com.google.devtools.build.lib.pkgcache.TransitivePackageLoader;
+import com.google.devtools.build.lib.profiler.AutoProfiler;
+import com.google.devtools.build.lib.query2.engine.Callback;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment;
 import com.google.devtools.build.lib.query2.engine.QueryEvalResult;
 import com.google.devtools.build.lib.query2.engine.QueryException;
 import com.google.devtools.build.lib.query2.engine.QueryExpression;
-import com.google.devtools.build.lib.syntax.Label;
 import com.google.devtools.build.lib.util.BinaryPredicate;
 import com.google.devtools.build.skyframe.WalkableGraph.WalkableGraphFactory;
 
@@ -43,6 +46,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Logger;
 
 import javax.annotation.Nullable;
 
@@ -53,7 +58,7 @@ import javax.annotation.Nullable;
 public abstract class AbstractBlazeQueryEnvironment<T> implements QueryEnvironment<T> {
   protected final ErrorSensingEventHandler eventHandler;
   private final Map<String, Set<T>> letBindings = new HashMap<>();
-  protected final Map<String, ResolvedTargets<Target>> resolvedTargetPatterns = new HashMap<>();
+  protected final Map<String, Set<Target>> resolvedTargetPatterns = new HashMap<>();
   protected final boolean keepGoing;
   protected final boolean strictScope;
 
@@ -62,6 +67,8 @@ public abstract class AbstractBlazeQueryEnvironment<T> implements QueryEnvironme
 
   private final Set<Setting> settings;
   private final List<QueryFunction> extraFunctions;
+
+ private static final Logger LOG = Logger.getLogger(AbstractBlazeQueryEnvironment.class.getName());
 
   protected AbstractBlazeQueryEnvironment(boolean keepGoing,
       boolean strictScope,
@@ -131,25 +138,35 @@ public abstract class AbstractBlazeQueryEnvironment<T> implements QueryEnvironme
    * @throws QueryException if the evaluation failed and {@code --nokeep_going} was in
    *   effect
    */
-  public QueryEvalResult<T> evaluateQuery(QueryExpression expr) throws QueryException {
-    resolvedTargetPatterns.clear();
+  public QueryEvalResult evaluateQuery(QueryExpression expr, final Callback<T> callback)
+      throws QueryException, InterruptedException {
 
-    // In the --nokeep_going case, errors are reported in the order in which the patterns are
-    // specified; using a linked hash set here makes sure that the left-most error is reported.
-    Set<String> targetPatternSet = new LinkedHashSet<>();
-    expr.collectTargetPatterns(targetPatternSet);
-    try {
-      resolvedTargetPatterns.putAll(preloadOrThrow(expr, targetPatternSet));
-    } catch (TargetParsingException e) {
-      // Unfortunately, by evaluating the patterns in parallel, we lose some location information.
-      throw new QueryException(expr, e.getMessage());
-    }
+    final AtomicBoolean empty = new AtomicBoolean(true);
+    try (final AutoProfiler p = AutoProfiler.logged("evaluating query", LOG)) {
+      resolvedTargetPatterns.clear();
 
-    Set<T> resultNodes;
-    try {
-      resultNodes = expr.eval(this);
-    } catch (QueryException e) {
-      throw new QueryException(e, expr);
+      // In the --nokeep_going case, errors are reported in the order in which the patterns are
+      // specified; using a linked hash set here makes sure that the left-most error is reported.
+      Set<String> targetPatternSet = new LinkedHashSet<>();
+      expr.collectTargetPatterns(targetPatternSet);
+      try {
+        resolvedTargetPatterns.putAll(preloadOrThrow(expr, targetPatternSet));
+      } catch (TargetParsingException e) {
+        // Unfortunately, by evaluating the patterns in parallel, we lose some location information.
+        throw new QueryException(expr, e.getMessage());
+      }
+      try {
+        this.eval(expr, new Callback<T>() {
+          @Override
+          public void process(Iterable<T> partialResult)
+              throws QueryException, InterruptedException {
+            empty.compareAndSet(true, Iterables.isEmpty(partialResult));
+            callback.process(partialResult);
+          }
+        });
+      } catch (QueryException e) {
+        throw new QueryException(e, expr);
+      }
     }
 
     if (eventHandler.hasErrors()) {
@@ -164,11 +181,12 @@ public abstract class AbstractBlazeQueryEnvironment<T> implements QueryEnvironme
       }
     }
 
-    return new QueryEvalResult<>(!eventHandler.hasErrors(), resultNodes);
+    return new QueryEvalResult(!eventHandler.hasErrors(), empty.get());
   }
 
-  public QueryEvalResult<T> evaluateQuery(String query) throws QueryException {
-    return evaluateQuery(QueryExpression.parse(query, this));
+  public QueryEvalResult evaluateQuery(String query, Callback<T> callback)
+      throws QueryException, InterruptedException {
+    return evaluateQuery(QueryExpression.parse(query, this), callback);
   }
 
   @Override
@@ -213,15 +231,16 @@ public abstract class AbstractBlazeQueryEnvironment<T> implements QueryEnvironme
         resolvedTargetPatterns.putAll(preloadOrThrow(caller, ImmutableList.of(pattern)));
       } catch (TargetParsingException e) {
         // Will skip the target and keep going if -k is specified.
-        resolvedTargetPatterns.put(pattern, ResolvedTargets.<Target>empty());
+        resolvedTargetPatterns.put(pattern, ImmutableSet.<Target>of());
         reportBuildFileError(caller, e.getMessage());
       }
     }
     return getTargetsMatchingPattern(caller, pattern);
   }
 
-  protected abstract Map<String, ResolvedTargets<Target>> preloadOrThrow(QueryExpression caller,
-      Collection<String> patterns) throws QueryException, TargetParsingException;
+  protected abstract Map<String, Set<Target>> preloadOrThrow(
+      QueryExpression caller, Collection<String> patterns)
+      throws QueryException, TargetParsingException;
 
   @Override
   public boolean isSettingEnabled(Setting setting) {

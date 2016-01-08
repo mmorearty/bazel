@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright 2015 Google Inc. All rights reserved.
+# Copyright 2015 The Bazel Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,6 +20,48 @@ source $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-setup.sh \
 
 export JAVA_RUNFILES=$TEST_SRCDIR
 
+function setup_repo() {
+  mkdir -p $1
+  touch $1/WORKSPACE
+  echo $2 > $1/thing
+  cat > $1/BUILD <<EOF
+genrule(
+    name = "x",
+    srcs = ["thing"],
+    cmd = "cat \$(location thing) > \$@",
+    outs = ["out"],
+)
+EOF
+}
+
+function test_workspace_changes() {
+  repo_a=$TEST_TMPDIR/a
+  repo_b=$TEST_TMPDIR/b
+  setup_repo $repo_a hi
+  setup_repo $repo_b bye
+
+  cat > WORKSPACE <<EOF
+local_repository(
+    name = "x",
+    path = "$repo_a",
+)
+EOF
+
+  bazel build @x//:x || fail "build failed"
+  assert_contains "hi" bazel-genfiles/external/x/out
+
+  cat > WORKSPACE <<EOF
+local_repository(
+    name = "x",
+    path = "$repo_b",
+)
+EOF
+
+  bazel build @x//:x || fail "build failed"
+  assert_contains "bye" bazel-genfiles/external/x/out
+}
+
+
 function test_path_with_spaces() {
   ws="a b"
   mkdir "$ws"
@@ -30,71 +72,38 @@ function test_path_with_spaces() {
   bazel help &> $TEST_log || fail "Help failed"
 }
 
-function write_pom() {
-  cat > pom.xml <<EOF
-<project>
-  <modelVersion>4.0.0</modelVersion>
-  <groupId>com.mycompany.app</groupId>
-  <artifactId>my-app</artifactId>
-  <version>1</version>
-  <packaging>pom</packaging>
-  <modules>
-    <module>my-module</module>
-  </modules>
-  <dependencies>
-    <dependency>
-      <groupId>com.y.z</groupId>
-      <artifactId>x</artifactId>
-      <version>3.2.1</version>
-    </dependency>
-  </dependencies>
-</project>
-EOF
-}
+# Tests for middleman conflict when using workspace repository
+function test_middleman_conflict() {
+  local test_repo1=$TEST_TMPDIR/repo1
+  local test_repo2=$TEST_TMPDIR/repo2
 
-function test_minimal_pom() {
-  write_pom
+  mkdir -p $test_repo1
+  mkdir -p $test_repo2
+  echo "1" >$test_repo1/test.in
+  echo "2" >$test_repo2/test.in
+  echo 'filegroup(name="test", srcs=["test.in"], visibility=["//visibility:public"])' \
+    >$test_repo1/BUILD
+  echo 'filegroup(name="test", srcs=["test.in"], visibility=["//visibility:public"])' \
+    >$test_repo2/BUILD
+  touch $test_repo1/WORKSPACE
+  touch $test_repo2/WORKSPACE
 
-  ${bazel_data}/src/main/java/com/google/devtools/build/workspace/generate_workspace &> $TEST_log || \
-    fail "generating workspace failed"
-  expect_log "artifact_id = \"x\","
-  expect_log "group_id = \"com.y.z\","
-  expect_log "version = \"3.2.1\","
-}
-
-function test_parent_pom_inheritence() {
-  write_pom
-  mkdir my-module
-  cat > my-module/pom.xml <<EOF
-<project>
-  <parent>
-    <groupId>com.mycompany.app</groupId>
-    <artifactId>my-app</artifactId>
-    <version>1</version>
-  </parent>
-  <modelVersion>4.0.0</modelVersion>
-  <groupId>com.mycompany.app</groupId>
-  <artifactId>my-module</artifactId>
-  <version>1</version>
-  <dependencies>
-    <dependency>
-      <groupId>com.z.w</groupId>
-      <artifactId>x</artifactId>
-      <version>1.2.3</version>
-    </dependency>
-  </dependencies>
-</project>
+  cat > WORKSPACE <<EOF
+local_repository(name = 'repo1', path='$test_repo1')
+local_repository(name = 'repo2', path='$test_repo2')
 EOF
 
-  ${bazel_data}/src/main/java/com/google/devtools/build/workspace/generate_workspace my-module &> $TEST_log || \
-    fail "generating workspace failed"
-  expect_log "name = \"com/y/z/x\","
-  expect_log "artifact_id = \"x\","
-  expect_log "group_id = \"com.y.z\","
-  expect_log "version = \"3.2.1\","
-  expect_log "name = \"com/z/w/x\","
-  expect_log "group_id = \"com.z.w\","
-  expect_log "version = \"1.2.3\","
+  cat > BUILD <<'EOF'
+genrule(
+  name = "test",
+  srcs = ["@repo1//:test", "@repo2//:test"],
+  outs = ["test.out"],
+  cmd = "cat $(SRCS) >$@"
+)
+EOF
+  bazel fetch //:test || fail "Fetch failed"
+  bazel build //:test || echo "Expected build to succeed"
+  check_eq "12" "$(cat bazel-genfiles/test.out | tr -d '[[:space:]]')"
 }
 
 run_suite "workspace tests"

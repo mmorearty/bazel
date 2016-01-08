@@ -1,4 +1,4 @@
-# Copyright 2015 Google Inc. All rights reserved.
+# Copyright 2015 The Bazel Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -80,29 +80,6 @@ objc_bundle_library(
 objc_library(
     name = "CoreDataResources",
     datamodels = glob(["PrenotCalculator/DataModel.xcdatamodeld/**"]),
-)
-
-# If instruments is supported this genrule should *not timeout* and it should
-# produce a screenshot of the PrenotCalculator.ipa in ~ few seconds.
-genrule(
-    name = "PrenotCalculatorInstruments",
-    srcs = [":PrenotCalculator.ipa"],
-    outs = ["hello_instruments.png"],
-    cmd =
-        # This command expects the PrenotCalculator.ipa as input then unzips
-        # it into a temporary directory, creates a .js script on the fly
-        # that captures a screenshot, and finally invokes /usr/bin/instruments
-        # with the former as arguments.
-        "unzip -q $(location :PrenotCalculator.ipa) -d $${TMPDIR} ; " +
-        "echo 'UIATarget.localTarget().delay(5); UIATarget.localTarget().captureScreenWithName(\"hello_instruments\");' > $${TMPDIR}/hello_instruments.js && " +
-        "/usr/bin/instruments " +
-        "-t /Applications/Xcode.app/Contents/Applications/Instruments.app/Contents/PlugIns/AutomationInstrument.xrplugin/Contents/Resources/Automation.tracetemplate " +
-        "-w 'iPhone 5 (8.1 Simulator)' " +
-        "$${TMPDIR}/Payload/PrenotCalculator.app " +
-        "-e UIASCRIPT $${TMPDIR}/hello_instruments.js " +
-        "-e UIARESULTSPATH $${TMPDIR} -v && " +
-        "cp $${TMPDIR}'/Run 1/hello_instruments.png' $(@)",
-    tags = ["requires-darwin"],
 )
 
 filegroup(

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright 2015 Google Inc. All rights reserved.
+# Copyright 2015 The Bazel Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -59,8 +59,11 @@ function test_java() {
 function test_java_test() {
   setup_javatest_support
   local java_native_tests=//examples/java-native/src/test/java/com/example/myproject
+  local java_native_main=//examples/java-native/src/main/java/com/example/myproject
 
-  assert_build //examples/java-native/...
+  assert_build "-- //examples/java-native/... -${java_native_main}:hello-error-prone"
+  assert_build_fails "${java_native_main}:hello-error-prone" \
+      "Did you mean 'result = b == -1;'?"
   assert_test_ok "${java_native_tests}:hello"
   assert_test_ok "${java_native_tests}:custom"
   assert_test_fails "${java_native_tests}:fail"
@@ -97,6 +100,17 @@ function test_genrule_and_genquery() {
   }
 }
 
+if [ "${PLATFORM}" = "darwin" ]; then
+  function test_objc() {
+    setup_objc_test_support
+    # https://github.com/bazelbuild/bazel/issues/162
+    # prevents us from running iOS tests.
+    # TODO(bazel-team): Execute iOStests here when this issue is resolved.
+    assert_build_output ./bazel-bin/examples/objc/PrenotCalculator.ipa \
+        --ios_sdk_version=$IOS_SDK_VERSION //examples/objc:PrenotCalculator
+  }
+fi
+
 function test_native_python() {
   assert_build //examples/py_native:bin --python2_path=python
   assert_test_ok //examples/py_native:test --python2_path=python
@@ -114,7 +128,7 @@ function test_python() {
   expect_log "Fib(5)=8"
 
   # Mutate //examples/py:bin so that it needs to build again.
-  echo "print 'Hello'" > ./examples/py/bin.py
+  echo "print('Hello')" > ./examples/py/bin.py
   # Ensure that we can rebuild //examples/py::bin without error.
   assert_build "//examples/py:bin"
   ./bazel-bin/examples/py/bin >& $TEST_log \

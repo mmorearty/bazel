@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 
 package com.google.devtools.build.lib.actions;
 
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.Location;
-import com.google.devtools.build.lib.syntax.Label;
 
 /**
  * An action owner base class that provides default implementations for some of
@@ -43,27 +43,17 @@ public abstract class AbstractActionOwner implements ActionOwner {
     return "empty target kind";
   }
 
-  @Override
-  public String getConfigurationName() {
-    return "empty configuration";
-  }
-
   /**
    * An action owner for special cases. Usage is strongly discouraged. 
    */
   public static final ActionOwner SYSTEM_ACTION_OWNER = new AbstractActionOwner() {
-    @Override
-    public final String getConfigurationName() {
-      return "system";
-    }
-
     @Override
     public String getConfigurationMnemonic() {
       return "system";
     }
 
     @Override
-    public final String getConfigurationShortCacheKey() {
+    public final String getConfigurationChecksum() {
       return "system";
     }
   };

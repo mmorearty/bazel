@@ -1,4 +1,4 @@
-// Copyright 2006-2015 Google Inc. All rights reserved.
+// Copyright 2015 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,20 +16,19 @@ package com.google.devtools.build.lib.analysis.config;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration.Fragment;
 import com.google.devtools.build.lib.analysis.util.ConfigurationTestCase;
-import com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.rules.cpp.CppConfiguration;
 import com.google.devtools.build.lib.rules.cpp.CppOptions;
 import com.google.devtools.build.lib.rules.java.JavaConfiguration;
-import com.google.devtools.build.lib.syntax.Label;
 import com.google.devtools.build.lib.testutil.TestConstants;
-import com.google.devtools.build.lib.testutil.TestUtils;
-import com.google.devtools.build.lib.vfs.FileSystem;
-import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.testutil.TestRuleClassProvider;
 import com.google.devtools.common.options.Options;
 
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Tests for {@link BuildConfiguration}.
@@ -63,8 +62,6 @@ public class BuildConfigurationTest extends ConfigurationTestCase {
     }
 
     BuildConfiguration config = create("--platform_suffix=-test");
-    assertEquals("gcc-4.4.0-glibc-2.3.6-grte-k8-fastbuild-test",
-                 config.getShortName());
     assertEquals(outputBase + "/workspace/blaze-out/gcc-4.4.0-glibc-2.3.6-grte-k8-fastbuild-test",
         config.getOutputDirectory().getPath().toString());
   }
@@ -98,11 +95,12 @@ public class BuildConfigurationTest extends ConfigurationTestCase {
       return;
     }
 
-    BuildConfiguration config = create("--cpu=piii");
+    BuildConfigurationCollection configs = createCollection("--cpu=piii");
+    BuildConfiguration config = Iterables.getOnlyElement(configs.getTargetConfigurations());
     assertEquals(Label.parseAbsoluteUnchecked("//third_party/crosstool/mock:cc-compiler-piii"),
         config.getFragment(CppConfiguration.class).getCcToolchainRuleLabel());
 
-    BuildConfiguration hostConfig = config.getConfiguration(ConfigurationTransition.HOST);
+    BuildConfiguration hostConfig = configs.getHostConfiguration();
     assertEquals(Label.parseAbsoluteUnchecked("//third_party/crosstool/mock:cc-compiler-k8"),
         hostConfig.getFragment(CppConfiguration.class).getCcToolchainRuleLabel());
   }
@@ -121,17 +119,18 @@ public class BuildConfigurationTest extends ConfigurationTestCase {
     assertEquals(a.cacheKey(), b.cacheKey());
   }
 
-  private void checkInvalidCpuError(String cpuOption, String expectedMessage) throws Exception {
+  private void checkInvalidCpuError(String cpuOption, Pattern messageRegex) throws Exception {
     try {
       create("--" + cpuOption + "=bogus");
       fail();
     } catch (InvalidConfigurationException e) {
-      assertThat(e).hasMessage(expectedMessage);
+      assertThat(e.getMessage()).matches(messageRegex);
     }
   }
 
   public void testInvalidCpu() throws Exception {
-    checkInvalidCpuError("cpu", "No toolchain found for cpu 'bogus'");
+    checkInvalidCpuError("cpu", Pattern.compile(
+        "No toolchain found for cpu 'bogus'. Valid cpus are: \\[\n(  [\\w-]+,\n)+]"));
   }
 
   public void testConfigurationsHaveUniqueOutputDirectories() throws Exception {
@@ -144,8 +143,7 @@ public class BuildConfigurationTest extends ConfigurationTestCase {
       return;
     }
 
-    BuildConfigurationCollection master = createCollection(
-        "--multi_cpu=k8", "--multi_cpu=piii", "--ignore_java_cpu");
+    BuildConfigurationCollection master = createCollection("--multi_cpu=k8", "--multi_cpu=piii");
     assertThat(master.getTargetConfigurations()).hasSize(2);
     // Note: the cpus are sorted alphabetically.
     assertEquals("k8", master.getTargetConfigurations().get(0).getCpu());
@@ -164,11 +162,9 @@ public class BuildConfigurationTest extends ConfigurationTestCase {
     for (int order = 0; order < 2; order++) {
       BuildConfigurationCollection master;
       if (order == 0) {
-        master = createCollection(
-            "--multi_cpu=k8", "--multi_cpu=piii", "--ignore_java_cpu");
+        master = createCollection("--multi_cpu=k8", "--multi_cpu=piii");
       } else {
-        master = createCollection(
-            "--multi_cpu=piii", "--multi_cpu=k8", "--ignore_java_cpu");
+        master = createCollection("--multi_cpu=piii", "--multi_cpu=k8");
       }
       assertThat(master.getTargetConfigurations()).hasSize(2);
       assertEquals("k8", master.getTargetConfigurations().get(0).getCpu());
@@ -213,15 +209,6 @@ public class BuildConfigurationTest extends ConfigurationTestCase {
         }
         return new Fragment() {
 
-          @Override
-          public String getName() {
-            return creates.toString();
-          }
-
-          @Override
-          public String cacheKey() {
-            return creates.toString();
-          }
         };
       }
     };
@@ -286,13 +273,21 @@ public class BuildConfigurationTest extends ConfigurationTestCase {
     assertNull(create().getOptionValue("test_filter"));
   }
 
-  public void testSerialization() throws Exception {
-    FileSystem oldFileSystem = Path.getFileSystemForSerialization();
-    try {
-      Path.setFileSystemForSerialization(scratch.getFileSystem());
-      TestUtils.serializeObject(createCollection());
-    } finally {
-      Path.setFileSystemForSerialization(oldFileSystem);
-    }
+  public void testNoDistinctHostConfigurationUnsupportedWithDynamicConfigs() throws Exception {
+    checkError(
+        "--nodistinct_host_configuration does not currently work with dynamic configurations",
+        "--nodistinct_host_configuration", "--experimental_dynamic_configs");
+  }
+
+  public void testEqualsOrIsSupersetOf() throws Exception {
+    BuildConfiguration config = create();
+    BuildConfiguration trimmedConfig = config.clone(
+        ImmutableSet.<Class<? extends Fragment>>of(CppConfiguration.class),
+        TestRuleClassProvider.getRuleClassProvider());
+    BuildConfiguration hostConfig = createHost();
+
+    assertTrue(config.equalsOrIsSupersetOf(trimmedConfig));
+    assertFalse(config.equalsOrIsSupersetOf(hostConfig));
+    assertFalse(trimmedConfig.equalsOrIsSupersetOf(config));
   }
 }

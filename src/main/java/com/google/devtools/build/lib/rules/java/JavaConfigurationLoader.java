@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,34 +22,37 @@ import com.google.devtools.build.lib.analysis.config.ConfigurationEnvironment;
 import com.google.devtools.build.lib.analysis.config.ConfigurationFragmentFactory;
 import com.google.devtools.build.lib.analysis.config.FragmentOptions;
 import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
+import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.rules.cpp.CppConfiguration;
+import com.google.devtools.build.lib.rules.cpp.CppOptions;
 import com.google.devtools.build.lib.rules.java.JavaConfiguration.JavaClasspathMode;
-import com.google.devtools.build.lib.syntax.Label;
 
 /**
  * A loader that creates JavaConfiguration instances based on JavaBuilder configurations and
  * command-line options.
  */
 public class JavaConfigurationLoader implements ConfigurationFragmentFactory {
-  private final JavaCpuSupplier cpuSupplier;
-
-  public JavaConfigurationLoader(JavaCpuSupplier cpuSupplier) {
-    this.cpuSupplier = cpuSupplier;
-  }
-
   @Override
   public ImmutableSet<Class<? extends FragmentOptions>> requiredOptions() {
-    return ImmutableSet.<Class<? extends FragmentOptions>>of(JavaOptions.class);
+    // TODO(bazel-team): either require CppOptions only for dependency trees that use the JAVA_CPU
+    // make variable or break out CppConfiguration.getTargetCpu() into its own distinct fragment.
+    return ImmutableSet.of(JavaOptions.class, CppOptions.class);
   }
 
 
   @Override
   public JavaConfiguration create(ConfigurationEnvironment env, BuildOptions buildOptions)
       throws InvalidConfigurationException {
+    CppConfiguration cppConfiguration = env.getFragment(buildOptions, CppConfiguration.class);
+    if (cppConfiguration == null) {
+      return null;
+    }
+
     JavaOptions javaOptions = buildOptions.get(JavaOptions.class);
 
     Label javaToolchain = RedirectChaser.followRedirects(env, javaOptions.javaToolchain,
         "java_toolchain");
-    return create(javaOptions, javaToolchain, cpuSupplier.getJavaCpu(buildOptions, env));
+    return create(javaOptions, javaToolchain, cppConfiguration.getTargetCpu());
   }
 
   @Override

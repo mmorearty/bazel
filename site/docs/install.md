@@ -8,29 +8,19 @@ layout: documentation
 
 Supported platforms:
 
-*   Ubuntu Linux
+*   Ubuntu Linux (Wily 15.10 and Trusty 14.04 LTS)
 *   Mac OS X
 
 Java:
 
-*   Java JDK 8 or later
+*   Java JDK 8 or later ([JDK 7](#jdk7) is still supported
+    but deprecated).
 
-## Downloading Bazel
+## Install dependencies
 
-Clone the Bazel repo from GitHub:
+### Ubuntu
 
-```
-$ cd $HOME
-$ git clone https://github.com/google/bazel.git
-```
-
-## Building Bazel
-
-### Building Bazel on Ubuntu
-
-To build Bazel on Ubuntu:
-
-#### 1. Install JDK 8:
+#### 1. Install JDK 8
 
 **Ubuntu Trusty (14.04 LTS).** OpenJDK 8 is not available on Trusty. To
 install Oracle JDK 8:
@@ -41,84 +31,80 @@ $ sudo apt-get update
 $ sudo apt-get install oracle-java8-installer
 ```
 
-**Ubuntu Utopic (14.10).** To install OpenJDK 8:
+**Ubuntu Wily (15.10).** To install OpenJDK 8:
 
 ```
-$ sudo apt-get install openjdk-8-jdk
+$ sudo apt-get install openjdk-8-jdk openjdk-8-source
 ```
 
-#### 2. Set the `JAVA_HOME` environment variable.
-
-First, check to see if it's already set:
+#### 2. Install required packages
 
 ```
-$ echo $JAVA_HOME
+$ sudo apt-get install pkg-config zip g++ zlib1g-dev unzip
 ```
 
-If this prints the path to the JDK 8 root directory, proceed to the next
-step. Otherwise, find the Java `bin` directory using `which javac` and use
-`javac -version` to verify that you have the right JDK version. Then set
-the `JAVA_HOME` environment variable to the `bin` directory parent.
+### Mac OS X
 
-For example, if the path is `/usr/lib/jvm/jdk1.8.0/bin/javac`, set the
-`JAVA_HOME` variable to `/usr/lib/jvm/jdk1.8.0`:
+#### 1. Install JDK 8
 
-```
-$ export JAVA_HOME=/usr/lib/jvm/jdk1.8.0
-```
+JDK 8 can be downloaded from
+[Oracle's JDK Page](http://www.oracle.com/technetwork/java/javase/downloads/jdk8-downloads-2133151.html).
+Look for "Mac OS X x64" under "Java SE Development Kit". This will download a
+DMG image with an install wizard.
 
-You can also add this line to your `~/.bashrc` file.
+#### 2. Install XCode command line tools
 
-#### 3. Install required packages:
+Xcode can be downloaded from the
+[Apple Developer Site](https://developer.apple.com/xcode/downloads/), which will
+redirect to the App Store.
 
-```
-$ sudo apt-get install pkg-config zip g++ zlib1g-dev
-```
+For `objc_*` and `ios_*` rule support, you must have Xcode 6.1 or later with
+iOS SDK 8.1 installed on your system.
 
-#### 4. Build Bazel:
-
-```
-$ cd bazel
-$ ./compile.sh
-```
-
-### Building Bazel on OS X
-
-Bazel on Mac OS X requires:
-
-* The Xcode command line tools. Xcode can be downloaded from the
-  [Apple Developer Site](https://developer.apple.com/xcode/downloads/).
-
-* MacPorts or Homebrew for installing required packages.
-
-* An installation of JDK 8.
-
-* For `objc_*` and `ios_*` rule support, you must have Xcode 6.1 or later with
-  iOS SDK 8.1 installed on your system.
-
-To build Bazel on Mac OS X:
+Once XCode is installed you can trigger the license signature with the following
+command:
 
 ```
-$ cd bazel
-$ ./compile.sh
+$ sudo gcc --version
 ```
 
-Then you can run Bazel:
+## Download Bazel
 
-```
-$ ./output/bazel help
-```
+Download the [Bazel installer](https://github.com/bazelbuild/bazel/releases) for
+your operating system.
 
-## Running Bazel
+## Run the installer
 
-The Bazel executable is located at `output/bazel` in the Bazel home directory.
-It's a good idea to add this path to your default paths, as follows:
+Run the installer:
+
+<pre>
+$ chmod +x install-<em>version</em>-<em>os</em>.sh
+$ ./install-<em>version</em>-<em>os</em>.sh --user
+</pre>
+
+The `--user` flag installs Bazel to the `$HOME/bin` directory on your
+system and sets the `.bazelrc` path to `$HOME/.bazelrc`. Use the `--help`
+command to see additional installation options.
+
+## Set up your environment
+
+If you ran the Bazel installer with the `--user` flag as above, the Bazel
+executable is installed in your `$HOME/bin` directory. It's a good idea to add
+this directory to your default paths, as follows:
 
 ```bash
-$ export PATH="$PATH:$HOME/bazel/output"
+$ export PATH="$PATH:$HOME/bin"
 ```
 
 You can also add this command to your `~/.bashrc` file.
+
+## <a name="jdk7"></a>Using Bazel with JDK 7 (deprecated)
+
+Bazel version _0.1.0_ runs without any change with JDK 7. However, future
+version will stop supporting JDK 7 when our CI cannot build for it anymore.
+The installer for JDK 7 for Bazel versions after _0.1.0_ is labeled
+`./install-<em>version</em>-<em>os</em>-<b>jdk7</b>.sh`. If you wish to use JDK
+7, follow the same steps as for JDK 8 but with the _jdk7_ installer.
 
 ### Getting bash completion
 
@@ -152,4 +138,21 @@ Bazel also comes with a zsh completion script. To install it:
     zstyle ':completion:*' cache-path ~/.zsh/cache
     ```
 
-For more information, see [Getting started](getting-started.html).
+## Compiling from source
+
+If you would like to build Bazel from source, clone the source from GitHub and
+run `./compile.sh` to build it:
+
+```
+$ git clone https://github.com/bazelbuild/bazel.git
+$ cd bazel
+$ ./compile.sh
+```
+
+This will create a bazel binary in `bazel-bin/src/bazel`.
+
+Check our [continuous integration](http://ci.bazel.io) for the current status of
+the build.
+
+For more information on using Bazel, see [Getting
+started](getting-started.html).

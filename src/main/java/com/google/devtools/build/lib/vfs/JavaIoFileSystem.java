@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -36,7 +36,7 @@ import java.util.Collection;
  * system call - they all are associated with the VFS_STAT task.
  */
 @ThreadSafe
-public class JavaIoFileSystem extends AbstractFileSystem {
+public class JavaIoFileSystem extends AbstractFileSystemWithCustomStat {
   private static final LinkOption[] NO_LINK_OPTION = new LinkOption[0];
   // This isn't generally safe; we rely on the file system APIs not modifying the array.
   private static final LinkOption[] NOFOLLOW_LINKS_OPTION =
@@ -88,34 +88,6 @@ public class JavaIoFileSystem extends AbstractFileSystem {
     long startTime = Profiler.nanoTimeMaybe();
     try {
       return Files.exists(file.toPath(), linkOpts(followSymlinks));
-    } finally {
-      profiler.logSimpleTask(startTime, ProfilerTask.VFS_STAT, path.toString());
-    }
-  }
-
-  @Override
-  protected boolean isDirectory(Path path, boolean followSymlinks) {
-    File file = getIoFile(path);
-    long startTime = Profiler.nanoTimeMaybe();
-    try {
-      if (!followSymlinks && fileIsSymbolicLink(file)) {
-        return false;
-      }
-      return file.isDirectory();
-    } finally {
-      profiler.logSimpleTask(startTime, ProfilerTask.VFS_STAT, path.toString());
-    }
-  }
-
-  @Override
-  protected boolean isFile(Path path, boolean followSymlinks) {
-    File file = getIoFile(path);
-    long startTime = Profiler.nanoTimeMaybe();
-    try {
-      if (!followSymlinks && fileIsSymbolicLink(file)) {
-        return false;
-      }
-      return file.isFile();
     } finally {
       profiler.logSimpleTask(startTime, ProfilerTask.VFS_STAT, path.toString());
     }
@@ -365,17 +337,6 @@ public class JavaIoFileSystem extends AbstractFileSystem {
     }
   }
 
-  @Override
-  protected boolean isSymbolicLink(Path path) {
-    File file = getIoFile(path);
-    long startTime = Profiler.nanoTimeMaybe();
-    try {
-      return fileIsSymbolicLink(file);
-    } finally {
-      profiler.logSimpleTask(startTime, ProfilerTask.VFS_STAT, file.getPath());
-    }
-  }
-
   private boolean fileIsSymbolicLink(File file) {
     return Files.isSymbolicLink(file.toPath());
   }
@@ -428,7 +389,12 @@ public class JavaIoFileSystem extends AbstractFileSystem {
     FileStatus status =  new FileStatus() {
       @Override
       public boolean isFile() {
-        return attributes.isRegularFile();
+        return attributes.isRegularFile() || isSpecialFile();
+      }
+
+      @Override
+      public boolean isSpecialFile() {
+        return attributes.isOther();
       }
 
       @Override

@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,28 +13,39 @@
 // limitations under the License.
 package com.google.devtools.build.skyframe;
 
+import com.google.common.truth.Truth;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
-import com.google.devtools.build.lib.util.Pair;
 
+import java.util.ArrayList;
 import java.util.Set;
 
 /**
  * Class that allows clients to be notified on each access of the graph. Clients can simply track
- * accesses, or they can block to achieve desired synchronization.
+ * accesses, or they can block to achieve desired synchronization. Clients should call
+ * {@link #assertNoExceptions} at the end of tests in case exceptions were swallowed in async
+ * threads.
  */
 public class NotifyingInMemoryGraph extends InMemoryGraph {
   private final Listener graphListener;
+  private final ArrayList<Exception> unexpectedExceptions = new ArrayList<>();
 
   public NotifyingInMemoryGraph(Listener graphListener) {
-    this.graphListener = graphListener;
+    this.graphListener = new ErrorRecordingDelegatingListener(graphListener);
   }
 
-  @Override
-  public NodeEntry createIfAbsent(SkyKey key) {
+  protected NodeEntry createIfAbsent(SkyKey key) {
     graphListener.accept(key, EventType.CREATE_IF_ABSENT, Order.BEFORE, null);
     NodeEntry newval = getEntry(key);
     NodeEntry oldval = getNodeMap().putIfAbsent(key, newval);
     return oldval == null ? newval : oldval;
+  }
+
+  /**
+   * Should be called at end of test (ideally in an {@code @After} method) to assert that no
+   * exceptions were thrown during calls to the listener.
+   */
+  public void assertNoExceptions() {
+    Truth.assertThat(unexpectedExceptions).isEmpty();
   }
 
   // Subclasses should override if they wish to subclass NotifyingNodeEntry.
@@ -53,6 +64,23 @@ public class NotifyingInMemoryGraph extends InMemoryGraph {
     };
   }
 
+  private class ErrorRecordingDelegatingListener implements Listener {
+    private final Listener delegate;
+
+    private ErrorRecordingDelegatingListener(Listener delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public void accept(SkyKey key, EventType type, Order order, Object context) {
+      try {
+        delegate.accept(key, type, order, context);
+      } catch (Exception e) {
+        unexpectedExceptions.add(e);
+        throw e;
+      }
+    }
+  }
   /**
    * Graph/value entry events that the receiver can be informed of. When writing tests, feel free to
    * add additional events here if needed.
@@ -60,13 +88,17 @@ public class NotifyingInMemoryGraph extends InMemoryGraph {
   public enum EventType {
     CREATE_IF_ABSENT,
     ADD_REVERSE_DEP,
+    REMOVE_REVERSE_DEP,
     SIGNAL,
     SET_VALUE,
     MARK_DIRTY,
     MARK_CLEAN,
     IS_CHANGED,
     GET_VALUE_WITH_METADATA,
-    IS_DIRTY
+    IS_DIRTY,
+    IS_READY,
+    CHECK_IF_DONE,
+    GET_ALL_DIRECT_DEPS_FOR_INCOMPLETE_NODE
   }
 
   public enum Order {
@@ -74,6 +106,15 @@ public class NotifyingInMemoryGraph extends InMemoryGraph {
     AFTER
   }
 
+  /**
+   * Note that the methods in this class intentionally do not have the {@code synchronized}
+   * keyword! Each of them invokes the synchronized method on {@link InMemoryNodeEntry} it
+   * overrides, which provides the required synchronization for state owned by that base class.
+   *
+   * <p>These methods are not synchronized because several test cases control the flow of
+   * execution by blocking until notified by the callbacks executed in these methods. If these
+   * overrides were synchronized, they wouldn't get the chance to execute these callbacks.
+   */
   protected class NotifyingNodeEntry extends InMemoryNodeEntry {
     private final SkyKey myKey;
 
@@ -81,8 +122,7 @@ public class NotifyingInMemoryGraph extends InMemoryGraph {
       myKey = key;
     }
 
-    // Note that these methods are not synchronized. Necessary synchronization happens when calling
-    // the super() methods.
+    @SuppressWarnings("UnsynchronizedOverridesSynchronized") // See the class doc for details.
     @Override
     public DependencyState addReverseDepAndCheckIfDone(SkyKey reverseDep) {
       graphListener.accept(myKey, EventType.ADD_REVERSE_DEP, Order.BEFORE, reverseDep);
@@ -91,6 +131,15 @@ public class NotifyingInMemoryGraph extends InMemoryGraph {
       return result;
     }
 
+    @SuppressWarnings("UnsynchronizedOverridesSynchronized") // See the class doc for details.
+    @Override
+    public void removeReverseDep(SkyKey reverseDep) {
+      graphListener.accept(myKey, EventType.REMOVE_REVERSE_DEP, Order.BEFORE, reverseDep);
+      super.removeReverseDep(reverseDep);
+      graphListener.accept(myKey, EventType.REMOVE_REVERSE_DEP, Order.AFTER, reverseDep);
+    }
+
+    @SuppressWarnings("UnsynchronizedOverridesSynchronized") // See the class doc for details.
     @Override
     public boolean signalDep(Version childVersion) {
       graphListener.accept(myKey, EventType.SIGNAL, Order.BEFORE, childVersion);
@@ -99,6 +148,7 @@ public class NotifyingInMemoryGraph extends InMemoryGraph {
       return result;
     }
 
+    @SuppressWarnings("UnsynchronizedOverridesSynchronized") // See the class doc for details.
     @Override
     public Set<SkyKey> setValue(SkyValue value, Version version) {
       graphListener.accept(myKey, EventType.SET_VALUE, Order.BEFORE, value);
@@ -107,14 +157,16 @@ public class NotifyingInMemoryGraph extends InMemoryGraph {
       return result;
     }
 
+    @SuppressWarnings("UnsynchronizedOverridesSynchronized") // See the class doc for details.
     @Override
-    public Pair<? extends Iterable<SkyKey>, ? extends SkyValue> markDirty(boolean isChanged) {
+    public MarkedDirtyResult markDirty(boolean isChanged) {
       graphListener.accept(myKey, EventType.MARK_DIRTY, Order.BEFORE, isChanged);
-      Pair<? extends Iterable<SkyKey>, ? extends SkyValue> result = super.markDirty(isChanged);
+      MarkedDirtyResult result = super.markDirty(isChanged);
       graphListener.accept(myKey, EventType.MARK_DIRTY, Order.AFTER, isChanged);
       return result;
     }
 
+    @SuppressWarnings("UnsynchronizedOverridesSynchronized") // See the class doc for details.
     @Override
     public Set<SkyKey> markClean() {
       graphListener.accept(myKey, EventType.MARK_CLEAN, Order.BEFORE, this);
@@ -123,22 +175,47 @@ public class NotifyingInMemoryGraph extends InMemoryGraph {
       return result;
     }
 
+    @SuppressWarnings("UnsynchronizedOverridesSynchronized") // See the class doc for details.
     @Override
     public boolean isChanged() {
       graphListener.accept(myKey, EventType.IS_CHANGED, Order.BEFORE, this);
       return super.isChanged();
     }
 
+    @SuppressWarnings("UnsynchronizedOverridesSynchronized") // See the class doc for details.
     @Override
     public boolean isDirty() {
       graphListener.accept(myKey, EventType.IS_DIRTY, Order.BEFORE, this);
       return super.isDirty();
     }
 
+    @SuppressWarnings("UnsynchronizedOverridesSynchronized") // See the class doc for details.
     @Override
-    public ValueWithMetadata getValueWithMetadata() {
+    public boolean isReady() {
+      graphListener.accept(myKey, EventType.IS_READY, Order.BEFORE, this);
+      return super.isReady();
+    }
+
+    @SuppressWarnings("UnsynchronizedOverridesSynchronized") // See the class doc for details.
+    @Override
+    public SkyValue getValueMaybeWithMetadata() {
       graphListener.accept(myKey, EventType.GET_VALUE_WITH_METADATA, Order.BEFORE, this);
-      return super.getValueWithMetadata();
+      return super.getValueMaybeWithMetadata();
+    }
+
+    @SuppressWarnings("UnsynchronizedOverridesSynchronized") // See the class doc for details.
+    @Override
+    public DependencyState checkIfDoneForDirtyReverseDep(SkyKey reverseDep) {
+      graphListener.accept(myKey, EventType.CHECK_IF_DONE, Order.BEFORE, reverseDep);
+      return super.checkIfDoneForDirtyReverseDep(reverseDep);
+    }
+
+    @SuppressWarnings("UnsynchronizedOverridesSynchronized") // See the class doc for details.
+    @Override
+    public Iterable<SkyKey> getAllDirectDepsForIncompleteNode() {
+      graphListener.accept(
+          myKey, EventType.GET_ALL_DIRECT_DEPS_FOR_INCOMPLETE_NODE, Order.BEFORE, this);
+      return super.getAllDirectDepsForIncompleteNode();
     }
   }
 }

@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,33 +14,44 @@
 package com.google.devtools.build.lib.syntax;
 
 import com.google.common.base.Joiner;
+import com.google.common.base.Optional;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.devtools.build.lib.syntax.compiler.DebugInfo;
+import com.google.devtools.build.lib.syntax.compiler.LoopLabels;
+import com.google.devtools.build.lib.syntax.compiler.VariableScope;
 import com.google.devtools.build.lib.vfs.PathFragment;
 
-import java.util.List;
+import net.bytebuddy.implementation.bytecode.ByteCodeAppender;
+
+import java.util.Map;
 
 /**
  * Syntax node for an import statement.
  */
 public final class LoadStatement extends Statement {
 
-  public static final String PATH_ERROR_MSG = "Path '%s' is not valid. "
-      + "It should either start with a slash or refer to a file in the current directory.";
-  private final ImmutableList<Ident> symbols;
+  private final ImmutableMap<Identifier, String> symbols;
+  private final ImmutableList<Identifier> cachedSymbols; // to save time
   private final PathFragment importPath;
-  private final String pathString;
+  private final StringLiteral pathString;
 
   /**
    * Constructs an import statement.
+   *
+   * <p>{@code symbols} maps a symbol to the original name under which it was defined in
+   * the bzl file that should be loaded. If aliasing is used, the value differs from its key's
+   * {@code symbol.getName()}. Otherwise, both values are identical.
    */
-  LoadStatement(String path, List<Ident> symbols) {
-    this.symbols = ImmutableList.copyOf(symbols);
-    this.importPath = new PathFragment(path + ".bzl");
+  LoadStatement(StringLiteral path, Map<Identifier, String> symbols) {
+    this.symbols = ImmutableMap.copyOf(symbols);
+    this.cachedSymbols = ImmutableList.copyOf(symbols.keySet());
+    this.importPath = new PathFragment(path.getValue() + ".bzl");
     this.pathString = path;
   }
 
-  public ImmutableList<Ident> getSymbols() {
-    return symbols;
+  public ImmutableList<Identifier> getSymbols() {
+    return cachedSymbols;
   }
 
   public PathFragment getImportPath() {
@@ -49,18 +60,22 @@ public final class LoadStatement extends Statement {
 
   @Override
   public String toString() {
-    return String.format("load(\"%s\", %s)", importPath, Joiner.on(", ").join(symbols));
+    return String.format("load(\"%s\", %s)", importPath, Joiner.on(", ").join(cachedSymbols));
   }
 
   @Override
-  void exec(Environment env) throws EvalException, InterruptedException {
-    for (Ident i : symbols) {
+  void doExec(Environment env) throws EvalException, InterruptedException {
+    for (Map.Entry<Identifier, String> entry : symbols.entrySet()) {
       try {
-        if (i.getName().startsWith("_")) {
-          throw new EvalException(getLocation(), "symbol '" + i + "' is private and cannot "
-              + "be imported");
+        Identifier current = entry.getKey();
+
+        if (current.isPrivate()) {
+          throw new EvalException(
+              getLocation(), "symbol '" + current + "' is private and cannot be imported.");
         }
-        env.importSymbol(getImportPath(), i.getName());
+        // The key is the original name that was used to define the symbol
+        // in the loaded bzl file.
+        env.importSymbol(getImportPath(), current, entry.getValue());
       } catch (Environment.NoSuchVariableException | Environment.LoadFailedException e) {
         throw new EvalException(getLocation(), e.getMessage());
       }
@@ -74,35 +89,50 @@ public final class LoadStatement extends Statement {
 
   @Override
   void validate(ValidationEnvironment env) throws EvalException {
-    validateLoadPath();
-    
-    if (!importPath.isAbsolute() && importPath.segmentCount() > 1) {
-      throw new EvalException(getLocation(), String.format(PATH_ERROR_MSG, importPath));
-    }
-    for (Ident symbol : symbols) {
+    validatePath();
+    for (Identifier symbol : cachedSymbols) {
       env.declare(symbol.getName(), getLocation());
     }
   }
 
+  public StringLiteral getPath() {
+    return pathString;
+  }
+
   /**
-   * Throws an exception if the path argument to load() does starts with more than one forward
+   * Throws an exception if the path argument to load() starts with more than one forward
    * slash ('/')
-   *
-   * @throws EvalException if the path is empty or starts with two forward slashes
    */
-  private void validateLoadPath() throws EvalException {
+  public void validatePath() throws EvalException {
     String error = null;
 
-    if (pathString.isEmpty()) {
-      error = "Path argument to load() must not be empty";
-    } else if (pathString.startsWith("//")) {
+    if (pathString.getValue().isEmpty()) {
+      error = "Path argument to load() must not be empty.";
+    } else if (pathString.getValue().startsWith("//")) {
       error =
           "First argument of load() is a path, not a label. "
           + "It should start with a single slash if it is an absolute path.";
+    } else if (!importPath.isAbsolute() && importPath.segmentCount() > 1) {
+      error = String.format(
+          "Path '%s' is not valid. "
+              + "It should either start with a slash or refer to a file in the current directory.",
+          importPath);
     }
 
     if (error != null) {
       throw new EvalException(getLocation(), error);
     }
+  }
+
+  @Override
+  ByteCodeAppender compile(
+      VariableScope scope, Optional<LoopLabels> loopLabels, DebugInfo debugInfo) {
+    throw new UnsupportedOperationException(
+        "load statements should never appear in method bodies and"
+            + " should never be compiled in general");
+  }
+
+  public boolean isAbsolute() {
+    return getImportPath().isAbsolute();
   }
 }

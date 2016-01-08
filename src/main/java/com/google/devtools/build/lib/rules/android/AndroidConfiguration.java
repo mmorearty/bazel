@@ -1,4 +1,4 @@
-// Copyright 2015 Google Inc. All rights reserved.
+// Copyright 2015 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,8 +18,8 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
 import com.google.devtools.build.lib.Constants;
-import com.google.devtools.build.lib.analysis.RedirectChaser;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildConfiguration.DefaultLabelConverter;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration.Fragment;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration.LabelConverter;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration.StrictDepsConverter;
@@ -29,30 +29,104 @@ import com.google.devtools.build.lib.analysis.config.ConfigurationEnvironment;
 import com.google.devtools.build.lib.analysis.config.ConfigurationFragmentFactory;
 import com.google.devtools.build.lib.analysis.config.FragmentOptions;
 import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.packages.Attribute.SplitTransition;
-import com.google.devtools.build.lib.syntax.Label;
-import com.google.devtools.build.lib.syntax.Label.SyntaxException;
 import com.google.devtools.common.options.Converters;
+import com.google.devtools.common.options.EnumConverter;
 import com.google.devtools.common.options.Option;
 
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.TreeMap;
 
 /**
  * Configuration fragment for Android rules.
  */
 public class AndroidConfiguration extends BuildConfiguration.Fragment {
+
+  /** Converter for --android_crosstool_top. */
+  public static class AndroidCrosstoolTopConverter extends DefaultLabelConverter {
+    public AndroidCrosstoolTopConverter() {
+      super(Constants.ANDROID_DEFAULT_CROSSTOOL);
+    }
+  }
+
+  /** Converter for --android_sdk. */
+  public static class AndroidSdkConverter extends DefaultLabelConverter {
+    public AndroidSdkConverter() {
+      super(Constants.ANDROID_DEFAULT_SDK);
+    }
+  }
+
+  /**
+   * Value used to avoid multiple configurations from conflicting.
+   *
+   * <p>This is set to {@code ANDROID} in Android configurations and to {@code MAIN} otherwise. This
+   * influences the output directory name: if it didn't, an Android and a non-Android configuration
+   * would conflict if they had the same toolchain identifier.
+   *
+   * <p>Note that this is not just a theoretical concern: even if {@code --crosstool_top} and
+   * {@code --android_crosstool_top} point to different labels, they may end up being redirected to
+   * the same thing, and this is exactly what happens on OSX X.
+   */
+  public enum ConfigurationDistinguisher {
+    MAIN(null),
+    ANDROID("android");
+
+    private final String suffix;
+
+    private ConfigurationDistinguisher(String suffix) {
+      this.suffix = suffix;
+    }
+  }
+
+  /**
+   * Converter for {@link com.google.devtools.build.lib.rules.android.AndroidConfiguration.ConfigurationDistinguisher}
+   */
+  public static final class ConfigurationDistinguisherConverter
+      extends EnumConverter<ConfigurationDistinguisher> {
+    public ConfigurationDistinguisherConverter() {
+      super(ConfigurationDistinguisher.class, "Android configuration distinguisher");
+    }
+  }
+
   /**
    * Android configuration options.
    */
   public static class Options extends FragmentOptions {
+    // Spaces make it impossible to specify this on the command line
+    @Option(name = "Android configuration distinguisher",
+        defaultValue = "MAIN",
+        converter = ConfigurationDistinguisherConverter.class,
+        category = "undocumented")
+    public ConfigurationDistinguisher configurationDistinguisher;
+
+    // For deploying incremental installation of native libraries. Do not use on the command line.
+    // The idea is that once this option works, we'll flip the default value in a config file, then
+    // once it is proven that it works, remove it from Bazel and said config file.
+    @Option(name = "android_incremental_native_libs",
+        defaultValue = "false",
+        category = "undocumented")
+    public boolean incrementalNativeLibs;
+
+    @Option(name = "android_crosstool_top",
+        defaultValue = "",
+        category = "semantics",
+        converter = AndroidCrosstoolTopConverter.class,
+        help = "The location of the C++ compiler used for Android builds.")
+    public Label androidCrosstoolTop;
+
     @Option(name = "android_cpu",
         defaultValue = "armeabi",
         category = "semantics",
         help = "The Android target CPU.")
     public String cpu;
+
+    @Option(
+      name = "android_compiler",
+      defaultValue = "null",
+      category = "semantics",
+      help = "The Android target compiler."
+    )
+    public String cppCompiler;
 
     @Option(name = "strict_android_deps",
         allowMultiple = false,
@@ -66,9 +140,9 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
     // Label of filegroup combining all Android tools used as implicit dependencies of
     // android_* rules
     @Option(name = "android_sdk",
-            defaultValue = "null",
+            defaultValue = "",
             category = "version",
-            converter = LabelConverter.class,
+            converter = AndroidSdkConverter.class,
             help = "Specifies Android SDK/platform that is used to build Android applications.")
     public Label sdk;
 
@@ -118,49 +192,27 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
         labelMap.put("android_proguard", proguard);
       }
 
-      labelMap.put("android_sdk", realSdk());
+      if (androidCrosstoolTop != null) {
+        labelMap.put("android_crosstool_top", androidCrosstoolTop);
+      }
 
-      labelMap.put("android_incremental_stub_application",
-          AndroidRuleClasses.DEFAULT_INCREMENTAL_STUB_APPLICATION);
-      labelMap.put("android_incremental_split_stub_application",
-          AndroidRuleClasses.DEFAULT_INCREMENTAL_SPLIT_STUB_APPLICATION);
-      labelMap.put("android_resources_processor", AndroidRuleClasses.DEFAULT_RESOURCES_PROCESSOR);
-      labelMap.put("android_aar_generator", AndroidRuleClasses.DEFAULT_AAR_GENERATOR);
+      labelMap.put("android_sdk", sdk);
     }
 
-    // This method is here because Constants.ANDROID_DEFAULT_SDK cannot be a constant, because we
-    // replace the class file in the .jar after compilation. However, that means that we cannot use
-    // it as an attribute value in an annotation.
-    private Label realSdk() {
-      return sdk == null
-          ? Label.parseAbsoluteUnchecked(Constants.ANDROID_DEFAULT_SDK)
-          : sdk;
-    }
-
-    @Override
-    public Map<String, Set<Label>> getDefaultsLabels(BuildConfiguration.Options commonOptions) {
-      Map<String, Set<Label>> result = new TreeMap<>();
-      Label realSdk = realSdk();
-      addLabel(result, realSdk, "ANDROID_AIDL_TOOL", "static_aidl_tool");
-      addLabel(result, realSdk, "ANDROID_AIDL_FRAMEWORK", "aidl_framework");
-      addLabel(result, realSdk, "ANDROID_AAPT", "static_aapt_tool");
-      addLabel(result, realSdk, "ANDROID_ADB", "static_adb_tool");
-      addLabel(result, realSdk, "ANDROID_APKBUILDER", "apkbuilder_tool");
-      addLabel(result, realSdk, "ANDROID_DX_JAR", "dx_jar");
-      return result;
+    // This method is here because Constants.ANDROID_DEFAULT_FAT_APK_CPUS cannot be a constant
+    // because we replace the class file in the .jar after compilation. However, that means that we
+    // cannot use it as an attribute value in an annotation.
+    public List<String> realFatApkCpus() {
+      if (fatApkCpus.isEmpty()) {
+        return Constants.ANDROID_DEFAULT_FAT_APK_CPUS;
+      } else {
+        return fatApkCpus;
+      }
     }
 
     @Override
     public ImmutableList<String> getDefaultsRules() {
       return ImmutableList.of("android_tools_defaults_jar(name = 'android_jar')");
-    }
-
-    private void addLabel(Map<String, Set<Label>> map, Label sdk, String key, String localLabel) {
-      try {
-        map.put(key, ImmutableSet.of(sdk.getLocalTargetLabel(localLabel)));
-      } catch (SyntaxException e) {
-        throw new IllegalStateException("Invalid label for " + key + ": " + localLabel, e);
-      }
     }
 
     @Override
@@ -176,28 +228,7 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
     @Override
     public Fragment create(ConfigurationEnvironment env, BuildOptions buildOptions)
         throws InvalidConfigurationException {
-      Options options = buildOptions.get(Options.class);
-      Label sdk = RedirectChaser.followRedirects(env, options.realSdk(), "android_sdk");
-      Label incrementalStubApplication = RedirectChaser.followRedirects(env,
-          AndroidRuleClasses.DEFAULT_INCREMENTAL_STUB_APPLICATION,
-          "android_incremental_stub_application");
-      Label incrementalSplitStubApplication = RedirectChaser.followRedirects(env,
-          AndroidRuleClasses.DEFAULT_INCREMENTAL_SPLIT_STUB_APPLICATION,
-          "android_incremental_split_stub_application");
-      Label resourcesProcessor = RedirectChaser.followRedirects(env,
-          AndroidRuleClasses.DEFAULT_RESOURCES_PROCESSOR,
-          "android_resources_processor");
-      Label aarGenerator = RedirectChaser.followRedirects(env,
-          AndroidRuleClasses.DEFAULT_AAR_GENERATOR,
-          "android_aar_generator");
-
-      if (incrementalStubApplication == null) {
-        return null;
-      }
-
-      return new AndroidConfiguration(
-          options, sdk, incrementalStubApplication, incrementalSplitStubApplication,
-          resourcesProcessor, aarGenerator);
+      return new AndroidConfiguration(buildOptions.get(Options.class));
     }
 
     @Override
@@ -212,42 +243,27 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
   }
 
   private final Label sdk;
-  private final Label incrementalStubApplication;
-  private final Label incrementalSplitStubApplication;
-  private final Label resourcesProcessor;
-  private final Label aarGenerator;
   private final StrictDepsMode strictDeps;
   private final boolean legacyNativeSupport;
   private final String cpu;
+  private final boolean incrementalNativeLibs;
   private final boolean fatApk;
+  private final ConfigurationDistinguisher configurationDistinguisher;
   private final Label proguard;
   private final boolean useJackForDexing;
   private final boolean jackSanityChecks;
 
-  AndroidConfiguration(Options options, Label sdk, Label incrementalStubApplication,
-      Label incrementalSplitStubApplication, Label resourcesProcessor, Label aarGenerator) {
-    this.sdk = sdk;
-    this.incrementalStubApplication = incrementalStubApplication;
-    this.incrementalSplitStubApplication = incrementalSplitStubApplication;
-    this.resourcesProcessor = resourcesProcessor;
-    this.aarGenerator = aarGenerator;
+  AndroidConfiguration(Options options) {
+    this.sdk = options.sdk;
+    this.incrementalNativeLibs = options.incrementalNativeLibs;
     this.strictDeps = options.strictDeps;
     this.legacyNativeSupport = options.legacyNativeSupport;
     this.cpu = options.cpu;
-    this.fatApk = !options.fatApkCpus.isEmpty();
+    this.fatApk = !options.realFatApkCpus().isEmpty();
+    this.configurationDistinguisher = options.configurationDistinguisher;
     this.proguard = options.proguard;
     this.useJackForDexing = options.useJackForDexing;
     this.jackSanityChecks = options.jackSanityChecks;
-  }
-
-  @Override
-  public String getName() {
-    return "Android";
-  }
-
-  @Override
-  public String cacheKey() {
-    return cpu + "-" + strictDeps.toString().toLowerCase();
   }
 
   public String getCpu() {
@@ -264,22 +280,6 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
 
   public StrictDepsMode getStrictDeps() {
     return strictDeps;
-  }
-
-  public Label getIncrementalStubApplication() {
-    return incrementalStubApplication;
-  }
-
-  public Label getIncrementalSplitStubApplication() {
-    return incrementalSplitStubApplication;
-  }
-
-  public Label getResourcesProcessor() {
-    return resourcesProcessor;
-  }
-
-  public Label getAarGenerator() {
-    return aarGenerator;
   }
 
   public boolean isFatApk() {
@@ -301,6 +301,10 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
     return jackSanityChecks;
   }
 
+  public boolean useIncrementalNativeLibs() {
+    return incrementalNativeLibs;
+  }
+
   @Override
   public void addGlobalMakeVariables(ImmutableMap.Builder<String, String> globalMakeEnvBuilder) {
     globalMakeEnvBuilder.put("ANDROID_CPU", cpu);
@@ -308,12 +312,7 @@ public class AndroidConfiguration extends BuildConfiguration.Fragment {
 
   @Override
   public String getOutputDirectoryName() {
-    return fatApk ? "fat-apk" : null;
-  }
-
-  @Override
-  public String getConfigurationNameSuffix() {
-    return fatApk ? "fat-apk" : null;
+    return configurationDistinguisher.suffix;
   }
 
   public Label getProguardLabel() {

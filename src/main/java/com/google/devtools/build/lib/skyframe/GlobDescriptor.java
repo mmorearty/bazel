@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 package com.google.devtools.build.lib.skyframe;
 
 import com.google.common.base.Preconditions;
+import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
-import com.google.devtools.build.lib.packages.PackageIdentifier;
 import com.google.devtools.build.lib.util.StringCanonicalizer;
 import com.google.devtools.build.lib.vfs.PathFragment;
 
@@ -46,7 +46,7 @@ public final class GlobDescriptor implements Serializable {
    * @param pattern a valid glob pattern
    * @param excludeDirs true if directories should be excluded from results
    */
-  GlobDescriptor(PackageIdentifier packageId, PathFragment subdir, String pattern,
+  public GlobDescriptor(PackageIdentifier packageId, PathFragment subdir, String pattern,
       boolean excludeDirs) {
     this.packageId = Preconditions.checkNotNull(packageId);
     this.subdir = Preconditions.checkNotNull(subdir);
@@ -72,7 +72,7 @@ public final class GlobDescriptor implements Serializable {
   /**
    * Returns the subdirectory of the package under consideration.
    */
-  PathFragment getSubdir() {
+  public PathFragment getSubdir() {
     return subdir;
   }
 
@@ -82,14 +82,14 @@ public final class GlobDescriptor implements Serializable {
    * <p>As the glob evaluator traverses deeper into the file tree, components are added at the
    * beginning of {@code subdir} and removed from the beginning of {@code pattern}.
    */
-  String getPattern() {
+  public String getPattern() {
     return pattern;
   }
 
   /**
    * Returns true if directories should be excluded from results.
    */
-  boolean excludeDirs() {
+  public boolean excludeDirs() {
     return excludeDirs;
   }
 

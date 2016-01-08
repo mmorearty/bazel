@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,7 +14,9 @@
 
 package com.google.devtools.build.lib.packages;
 
-import com.google.devtools.build.lib.syntax.Label;
+import com.google.devtools.build.lib.cmdline.Label;
+
+import java.util.Objects;
 
 import javax.annotation.Nullable;
 
@@ -28,23 +30,32 @@ public class NoSuchTargetException extends NoSuchThingException {
   private final boolean hasTarget;
 
   public NoSuchTargetException(String message) {
-    this(null, message);
+    this(
+        message,
+        /*label=*/ null,
+        /*hasTarget=*/ false);
   }
 
-  public NoSuchTargetException(@Nullable Label label, String message) {
-    this((label != null ? "no such target '" + label + "': " : "") + message, label, null, null);
+  public NoSuchTargetException(Label label, String message) {
+    this(
+        "no such target '" + label + "': " + message,
+        label,
+        /*hasTarget=*/ false);
   }
 
-  public NoSuchTargetException(Target targetInError, NoSuchPackageException nspe) {
-    this(String.format("Target '%s' contains an error and its package is in error",
-        targetInError.getLabel()), targetInError.getLabel(), targetInError, nspe);
+  public NoSuchTargetException(Target targetInError) {
+    this(
+        "Target '" + targetInError.getLabel() + "' contains an error and its package is in error",
+        targetInError.getLabel(),
+        /*hasTarget=*/ true);
   }
 
-  private NoSuchTargetException(String message, @Nullable Label label, @Nullable Target target,
-      @Nullable NoSuchPackageException nspe) {
-    super(message, nspe);
+  public NoSuchTargetException(String message, @Nullable Label label, boolean hasTarget) {
+    // TODO(bazel-team): Does the exception matter?
+    super(message,
+        hasTarget ? new BuildFileContainsErrorsException(label.getPackageIdentifier()) : null);
     this.label = label;
-    this.hasTarget = (target != null);
+    this.hasTarget = hasTarget;
   }
 
   @Nullable
@@ -52,10 +63,26 @@ public class NoSuchTargetException extends NoSuchThingException {
     return label;
   }
 
-  /**
-   * Return whether parsing completed enough to construct the target.
-   */
+  /** Return whether parsing completed enough to construct the target. */
   public boolean hasTarget() {
     return hasTarget;
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (!(o instanceof NoSuchTargetException)) {
+      return false;
+    }
+    NoSuchTargetException that = (NoSuchTargetException) o;
+    return Objects.equals(this.label, that.label)
+        && Objects.equals(this.hasTarget, that.hasTarget);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(label, hasTarget);
   }
 }

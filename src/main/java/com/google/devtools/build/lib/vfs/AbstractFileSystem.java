@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -36,7 +36,7 @@ abstract class AbstractFileSystem extends FileSystem {
   protected static final Profiler profiler = Profiler.instance();
 
   @Override
-  protected InputStream getInputStream(Path path) throws FileNotFoundException {
+  protected InputStream getInputStream(Path path) throws IOException {
     // This loop is a workaround for an apparent bug in FileInputStrean.open, which delegates
     // ultimately to JVM_Open in the Hotspot JVM.  This call is not EINTR-safe, so we must do the
     // retry here.
@@ -64,6 +64,17 @@ abstract class AbstractFileSystem extends FileSystem {
       try {
         // Replace default FileInputStream instance with the custom one that does profiling.
         return new FileInputStream(name) {
+          @Override public int read() throws IOException {
+            long startTime = Profiler.nanoTimeMaybe();
+            try {
+              // Note that FileInputStream#read() does *not* call any of our overriden methods,
+              // so there's no concern with double counting here.
+              return super.read();
+            } finally {
+              profiler.logSimpleTask(startTime, ProfilerTask.VFS_READ, name);
+            }
+          }
+
           @Override public int read(byte b[]) throws IOException {
             return read(b, 0, b.length);
           }

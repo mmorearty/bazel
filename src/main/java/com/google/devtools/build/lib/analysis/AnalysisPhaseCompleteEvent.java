@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -34,7 +34,8 @@ public class AnalysisPhaseCompleteEvent {
   public AnalysisPhaseCompleteEvent(Collection<? extends ConfiguredTarget> targets,
       int targetsVisited, long timeInMs) {
     this.timeInMs = timeInMs;
-    this.targets = ImmutableList.copyOf(targets);
+    // Do not remove <ConfiguredTarget>: workaround for Java 7 type inference.
+    this.targets = ImmutableList.<ConfiguredTarget>copyOf(targets);
     this.targetsVisited = targetsVisited;
   }
 

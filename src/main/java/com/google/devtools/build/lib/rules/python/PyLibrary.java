@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,6 +28,9 @@ import com.google.devtools.build.lib.rules.cpp.CcLinkParams;
 import com.google.devtools.build.lib.rules.cpp.CcLinkParamsProvider;
 import com.google.devtools.build.lib.rules.cpp.CcLinkParamsStore;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * An implementation for the {@code py_library} rule.
  */
@@ -45,22 +48,26 @@ public abstract class PyLibrary implements RuleConfiguredTargetFactory {
     PyCommon common = new PyCommon(ruleContext);
     common.initCommon(common.getDefaultPythonVersion());
     common.validatePackageName();
+
+    List<Artifact> srcs = common.validateSrcs();
+    List<Artifact> allOutputs =
+        new ArrayList<>(semantics.precompiledPythonFiles(ruleContext, srcs, common));
+
     NestedSet<Artifact> filesToBuild =
-        NestedSetBuilder.wrap(Order.STABLE_ORDER, common.validateSrcs());
+        NestedSetBuilder.wrap(Order.STABLE_ORDER, allOutputs);
     common.addPyExtraActionPseudoAction();
 
     CcLinkParamsStore ccLinkParamsStore = new CcLinkParamsStore() {
       @Override
       protected void collect(CcLinkParams.Builder builder, boolean linkingStatically,
                              boolean linkShared) {
-        builder.addTransitiveTargets(ruleContext.getPrerequisites("deps", Mode.TARGET));
-        builder.addTransitiveLangTargets(
-            ruleContext.getPrerequisites("deps", Mode.TARGET),
-            PyCcLinkParamsProvider.TO_LINK_PARAMS);
+        builder.addTransitiveTargets(ruleContext.getPrerequisites("deps", Mode.TARGET),
+            PyCcLinkParamsProvider.TO_LINK_PARAMS,
+            CcLinkParamsProvider.TO_LINK_PARAMS);
       }
     };
 
-    Runfiles.Builder runfilesBuilder = new Runfiles.Builder();
+    Runfiles.Builder runfilesBuilder = new Runfiles.Builder(ruleContext.getWorkspaceName());
     if (common.getConvertedFiles() != null) {
       runfilesBuilder.addSymlinks(common.getConvertedFiles());
     } else {
@@ -79,4 +86,3 @@ public abstract class PyLibrary implements RuleConfiguredTargetFactory {
         .build();
   }
 }
-

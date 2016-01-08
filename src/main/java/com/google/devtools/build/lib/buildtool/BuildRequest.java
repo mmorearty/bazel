@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -20,33 +20,32 @@ import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSortedSet;
+import com.google.common.collect.Sets;
 import com.google.devtools.build.lib.Constants;
 import com.google.devtools.build.lib.analysis.BuildView;
 import com.google.devtools.build.lib.analysis.OutputGroupProvider;
 import com.google.devtools.build.lib.analysis.TopLevelArtifactContext;
 import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
 import com.google.devtools.build.lib.exec.ExecutionOptions;
-import com.google.devtools.build.lib.pkgcache.LoadingPhaseRunner;
+import com.google.devtools.build.lib.pkgcache.LoadingOptions;
 import com.google.devtools.build.lib.pkgcache.PackageCacheOptions;
 import com.google.devtools.build.lib.runtime.BlazeCommandEventHandler;
 import com.google.devtools.build.lib.util.OptionsUtils;
 import com.google.devtools.build.lib.util.io.OutErr;
 import com.google.devtools.build.lib.vfs.PathFragment;
-import com.google.devtools.common.options.Converter;
 import com.google.devtools.common.options.Converters;
 import com.google.devtools.common.options.Converters.RangeConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsClassProvider;
-import com.google.devtools.common.options.OptionsParsingException;
 import com.google.devtools.common.options.OptionsProvider;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
+import java.util.regex.Pattern;
 
 /**
  * A BuildRequest represents a single invocation of the build tool by a user.
@@ -55,32 +54,10 @@ import java.util.concurrent.ExecutionException;
  * as --keep_going, --jobs, etc.
  */
 public class BuildRequest implements OptionsClassProvider {
-  private static final String DEFAULT_SYMLINK_PREFIX_MARKER = "...---:::@@@DEFAULT@@@:::--...";
-
-  /**
-   * A converter for symlink prefixes that defaults to {@code Constants.PRODUCT_NAME} and a
-   * minus sign if the option is not given.
-   *
-   * <p>Required because you cannot specify a non-constant value in annotation attributes.
-   */
-  public static class SymlinkPrefixConverter implements Converter<String> {
-    @Override
-    public String convert(String input) throws OptionsParsingException {
-      return input.equals(DEFAULT_SYMLINK_PREFIX_MARKER)
-          ? Constants.PRODUCT_NAME + "-"
-          : input;
-    }
-
-    @Override
-    public String getTypeDescription() {
-      return "a string";
-    }
-  }
-
   /**
    * Options interface--can be used to parse command-line arguments.
    *
-   * See also ExecutionOptions; from the user's point of view, there's no
+   * <p>See also ExecutionOptions; from the user's point of view, there's no
    * qualitative difference between these two sets of options.
    */
   public static class BuildRequestOptions extends OptionsBase {
@@ -119,6 +96,14 @@ public class BuildRequest implements OptionsClassProvider {
             help = "Increases the verbosity of the explanations issued if --explain is enabled. "
             + "Has no effect if --explain is not enabled.")
     public boolean verboseExplanations;
+
+    @Option(name = "output_filter",
+        converter = Converters.RegexPatternConverter.class,
+        defaultValue = "null",
+        category = "flags",
+        help = "Only shows warnings for rules with a name matching the provided regular "
+            + "expression.")
+    public Pattern outputFilter;
 
     @Deprecated
     @Option(name = "dump_makefile",
@@ -202,7 +187,12 @@ public class BuildRequest implements OptionsClassProvider {
         allowMultiple = true,
         defaultValue = "",
         category = "undocumented",
-        help = "Specifies, which output groups of the top-level target to build.")
+        help = "Specifies which output groups of the top-level targets to build. "
+            + "If omitted, a default set of output groups are built."
+            + "When specified the default set is overridden."
+            + "However you may use --output_groups=+<output_group> "
+            + "or --output_groups=-<output_group> "
+            + "to instead modify the set of output groups.")
     public List<String> outputGroups;
 
     @Option(name = "show_result",
@@ -220,6 +210,16 @@ public class BuildRequest implements OptionsClassProvider {
             + "causes printing of the result to occur always.  The default is one.")
     public int maxResultTargets;
 
+    @Option(name = "experimental_show_artifacts",
+        defaultValue = "false",
+        category = "undocumented",
+        help = "Output a list of all top level artifacts produced by this build."
+            + "Use output format suitable for tool consumption. "
+            + "This flag is temporary and intended to facilitate Android Studio integration. "
+            + "This output format will likely change in the future or disappear completely."
+    )
+    public boolean showArtifacts;
+
     @Option(name = "announce",
             defaultValue = "false",
             category = "verbosity",
@@ -228,12 +228,11 @@ public class BuildRequest implements OptionsClassProvider {
     public boolean announce;
 
     @Option(name = "symlink_prefix",
-        defaultValue = DEFAULT_SYMLINK_PREFIX_MARKER,
-        converter = SymlinkPrefixConverter.class,
+        defaultValue = "null",
         category = "misc",
         help = "The prefix that is prepended to any of the convenience symlinks that are created "
             + "after a build. If '/' is passed, then no symlinks are created and no warning is "
-            + "emitted."
+            + "emitted. If omitted, the default value is the name of the build tool."
         )
     public String symlinkPrefix;
 
@@ -252,6 +251,27 @@ public class BuildRequest implements OptionsClassProvider {
             help = "Check for modifications made to the output files of a build. Consider setting "
                 + "this flag to false to see the effect on incremental build times.")
     public boolean checkOutputFiles;
+
+    @Option(name = "experimental_output_tree_tracking",
+            defaultValue = "false",
+            category = "undocumented",
+            help = "If set, communicate with objsfd to track when files in the output tree have "
+                + "been modified externally (not by Blaze). This should improve incremental build "
+                + "speed.")
+    public boolean finalizeActions;
+
+    @Option(
+      name = "aspects",
+      converter = Converters.CommaSeparatedOptionListConverter.class,
+      defaultValue = "",
+      category = "undocumented", // for now
+      help = "List of top-level aspects"
+    )
+    public List<String> aspects;
+
+    public String getSymlinkPrefix() {
+      return symlinkPrefix == null ? Constants.PRODUCT_NAME + "-" : symlinkPrefix;
+    }
   }
 
   /**
@@ -289,7 +309,7 @@ public class BuildRequest implements OptionsClassProvider {
   private static final List<Class<? extends OptionsBase>> MANDATORY_OPTIONS = ImmutableList.of(
           BuildRequestOptions.class,
           PackageCacheOptions.class,
-          LoadingPhaseRunner.Options.class,
+          LoadingOptions.class,
           BuildView.Options.class,
           ExecutionOptions.class);
 
@@ -407,8 +427,8 @@ public class BuildRequest implements OptionsClassProvider {
   /**
    * Returns the set of options related to the loading phase.
    */
-  public LoadingPhaseRunner.Options getLoadingOptions() {
-    return getOptions(LoadingPhaseRunner.Options.class);
+  public LoadingOptions getLoadingOptions() {
+    return getOptions(LoadingOptions.class);
   }
 
   /**
@@ -492,10 +512,20 @@ public class BuildRequest implements OptionsClassProvider {
   }
 
   private ImmutableSortedSet<String> determineOutputGroups() {
-    Set<String> current = new HashSet<>(OutputGroupProvider.DEFAULT_GROUPS);
+    Set<String> current = Sets.newHashSet();
+
+    boolean overridesDefaultOutputGroups = false;
+    for (String outputGroup : getBuildOptions().outputGroups) {
+      overridesDefaultOutputGroups |= !(outputGroup.startsWith("+") || outputGroup.startsWith("-"));
+    }
+    if (!overridesDefaultOutputGroups) {
+      current.addAll(OutputGroupProvider.DEFAULT_GROUPS);
+    }
 
     for (String outputGroup : getBuildOptions().outputGroups) {
-      if (outputGroup.startsWith("-")) {
+      if (outputGroup.startsWith("+")) {
+        current.add(outputGroup.substring(1));
+      } else if (outputGroup.startsWith("-")) {
         current.remove(outputGroup.substring(1));
       } else {
         current.add(outputGroup);
@@ -505,12 +535,12 @@ public class BuildRequest implements OptionsClassProvider {
     return ImmutableSortedSet.copyOf(current);
   }
 
-  public String getSymlinkPrefix() {
-    return getBuildOptions().symlinkPrefix;
-  }
-
   public ImmutableSortedSet<String> getMultiCpus() {
     return ImmutableSortedSet.copyOf(getBuildOptions().multiCpus);
+  }
+
+  public ImmutableList<String> getAspects() {
+    return ImmutableList.copyOf(getBuildOptions().aspects);
   }
 
   public static BuildRequest create(String commandName, OptionsProvider options,

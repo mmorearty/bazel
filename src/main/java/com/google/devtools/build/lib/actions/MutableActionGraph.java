@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,9 +17,9 @@ package com.google.devtools.build.lib.actions;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import com.google.common.collect.Sets.SetView;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventHandler;
-import com.google.devtools.build.lib.syntax.Label;
 import com.google.devtools.build.lib.util.StringUtil;
 
 import java.util.Set;
@@ -70,7 +70,8 @@ public interface MutableActionGraph extends ActionGraph {
 
     public ActionConflictException(Artifact artifact, Action previousAction,
         Action attemptedAction) {
-      super("for " + artifact);
+      super(String.format("for %s, previous action: %s, attempted action: %s",
+          artifact, previousAction, attemptedAction));
       this.artifact = artifact;
       this.previousAction = previousAction;
       this.attemptedAction = attemptedAction;
@@ -139,8 +140,8 @@ public interface MutableActionGraph extends ActionGraph {
           bNull ? null : Label.print(bOwner.getLabel()));
       addStringDetail(sb, "RuleClass", aNull ? null : aOwner.getTargetKind(),
           bNull ? null : bOwner.getTargetKind());
-      addStringDetail(sb, "Configuration", aNull ? null : aOwner.getConfigurationName(),
-          bNull ? null : bOwner.getConfigurationName());
+      addStringDetail(sb, "Configuration", aNull ? null : aOwner.getConfigurationChecksum(),
+          bNull ? null : bOwner.getConfigurationChecksum());
       addStringDetail(sb, "Mnemonic", a.getMnemonic(), b.getMnemonic());
       addStringDetail(sb, "Progress message", a.getProgressMessage(), b.getProgressMessage());
 

@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,9 +16,9 @@ package com.google.devtools.build.lib.bazel.repository;
 
 import com.google.devtools.build.lib.analysis.RuleDefinition;
 import com.google.devtools.build.lib.bazel.rules.workspace.HttpArchiveRule;
-import com.google.devtools.build.lib.packages.PackageIdentifier.RepositoryName;
+import com.google.devtools.build.lib.cmdline.PackageIdentifier.RepositoryName;
 import com.google.devtools.build.lib.packages.Rule;
-import com.google.devtools.build.lib.skyframe.FileValue;
+import com.google.devtools.build.lib.rules.repository.RepositoryFunction;
 import com.google.devtools.build.lib.skyframe.RepositoryValue;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
@@ -43,17 +43,25 @@ public class HttpArchiveFunction extends RepositoryFunction {
       return null;
     }
 
-    return compute(env, rule);
+    if (isFilesystemUpToDate(rule, NO_RULE_SPECIFIC_DATA)) {
+      return RepositoryValue.create(getExternalRepositoryDirectory().getRelative(rule.getName()));
+    }
+
+    SkyValue result = compute(env, rule);
+    if (result != null) {
+      writeMarkerFile(rule, NO_RULE_SPECIFIC_DATA);
+    }
+
+    return result;
   }
 
-  protected FileValue createDirectory(Path path, Environment env)
+  protected void createDirectory(Path path)
       throws RepositoryFunctionException {
     try {
       FileSystemUtils.createDirectoryAndParents(path);
     } catch (IOException e) {
       throw new RepositoryFunctionException(e, Transience.TRANSIENT);
     }
-    return getRepositoryDirectory(path, env);
   }
 
   protected SkyValue compute(Environment env, Rule rule)
@@ -66,11 +74,7 @@ public class HttpArchiveFunction extends RepositoryFunction {
     //
     // This would download png.tar.gz to .external-repository/png/png.tar.gz.
     Path outputDirectory = getExternalRepositoryDirectory().getRelative(rule.getName());
-    FileValue directoryValue = createDirectory(outputDirectory, env);
-    if (directoryValue == null) {
-      return null;
-    }
-
+    createDirectory(outputDirectory);
     try {
       HttpDownloadValue downloadValue = (HttpDownloadValue) env.getValueOrThrow(
           HttpDownloadFunction.key(rule, outputDirectory), IOException.class);
@@ -78,9 +82,8 @@ public class HttpArchiveFunction extends RepositoryFunction {
         return null;
       }
 
-      DecompressorValue value = (DecompressorValue) env.getValueOrThrow(DecompressorValue.key(
-          rule.getTargetKind(), rule.getName(), downloadValue.getPath(), outputDirectory),
-          IOException.class);
+      DecompressorValue value = (DecompressorValue) env.getValueOrThrow(
+          decompressorValueKey(rule, downloadValue.getPath(), outputDirectory), IOException.class);
       if (value == null) {
         return null;
       }
@@ -88,12 +91,22 @@ public class HttpArchiveFunction extends RepositoryFunction {
       // Assumes all IO errors transient.
       throw new RepositoryFunctionException(e, Transience.TRANSIENT);
     }
-    return RepositoryValue.create(directoryValue);
+    return RepositoryValue.create(outputDirectory);
+  }
+
+  protected SkyKey decompressorValueKey(Rule rule, Path downloadPath, Path outputDirectory)
+      throws IOException {
+    return DecompressorValue.key(DecompressorDescriptor.builder()
+        .setTargetKind(rule.getTargetKind())
+        .setTargetName(rule.getName())
+        .setArchivePath(downloadPath)
+        .setRepositoryPath(outputDirectory)
+        .build());
   }
 
   @Override
   public SkyFunctionName getSkyFunctionName() {
-    return SkyFunctionName.computed(HttpArchiveRule.NAME.toUpperCase());
+    return SkyFunctionName.create(HttpArchiveRule.NAME.toUpperCase());
   }
 
   @Override

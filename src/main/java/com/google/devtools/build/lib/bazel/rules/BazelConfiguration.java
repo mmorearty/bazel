@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ import com.google.devtools.build.lib.vfs.PathFragment;
  */
 public class BazelConfiguration extends Fragment {
   /**
-   * Loader for Google-specific settings.
+   * Loader for Bazel-specific settings.
    */
   public static class Loader implements ConfigurationFragmentFactory {
     @Override
@@ -54,16 +54,6 @@ public class BazelConfiguration extends Fragment {
   }
 
   @Override
-  public String getName() {
-    return "Bazel";
-  }
-
-  @Override
-  public String cacheKey() {
-    return "";
-  }
-
-  @Override
   public void defineExecutables(ImmutableMap.Builder<String, PathFragment> builder) {
     if (OS.getCurrent() == OS.WINDOWS) {
       String path = System.getenv("BAZEL_SH");
@@ -73,5 +63,15 @@ public class BazelConfiguration extends Fragment {
       }
     }
     builder.put("sh", new PathFragment("/bin/bash"));
+  }
+
+  @Override
+  public void setupShellEnvironment(ImmutableMap.Builder<String, String> builder) {
+    String path = System.getenv("PATH");
+    builder.put("PATH", path == null ? ":/bin:/usr/bin" : path);
+    String tmpdir = System.getenv("TMPDIR");
+    if (tmpdir != null) {
+      builder.put("TMPDIR", tmpdir);
+    }
   }
 }

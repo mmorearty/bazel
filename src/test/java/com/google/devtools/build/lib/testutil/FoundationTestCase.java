@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,7 +25,6 @@ import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 
 import junit.framework.TestCase;
 
-import java.util.List;
 import java.util.Set;
 
 /**
@@ -43,9 +42,7 @@ public abstract class FoundationTestCase extends TestCase {
   // May be overridden by subclasses:
   protected Reporter reporter;
   protected EventCollector eventCollector;
-
   protected Scratch scratch;
-
 
   // Individual tests can opt-out of this handler if they expect an error, by
   // calling reporter.removeHandler(failFastHandler).
@@ -71,15 +68,7 @@ public abstract class FoundationTestCase extends TestCase {
     scratch = new Scratch(createFileSystem(), "/workspace");
     outputBase = scratch.dir("/usr/local/google/_blaze_jrluser/FAKEMD5/");
     rootDirectory = scratch.dir("/workspace");
-    scratch.file(rootDirectory.getRelative("WORKSPACE").getPathString(),
-        "bind(",
-        "  name = 'objc_proto_lib',",
-        "  actual = '//objcproto:ProtocolBuffers_lib',",
-        ")",
-        "bind(",
-        "  name = 'objc_proto_cpp_lib',",
-        "  actual = '//objcproto:ProtocolBuffersCPP_lib',",
-        ")");
+    scratch.file(rootDirectory.getRelative("WORKSPACE").getPathString());
     actionOutputBase = scratch.dir("/usr/local/google/_blaze_jrluser/FAKEMD5/action_out/");
     eventCollector = new EventCollector(EventKind.ERRORS_AND_WARNINGS);
     reporter = new Reporter(eventCollector);
@@ -104,54 +93,37 @@ public abstract class FoundationTestCase extends TestCase {
   // Mix-in assertions:
 
   protected void assertNoEvents() {
-    JunitTestUtils.assertNoEvents(eventCollector);
+    MoreAsserts.assertNoEvents(eventCollector);
   }
 
   protected Event assertContainsEvent(String expectedMessage) {
-    return JunitTestUtils.assertContainsEvent(eventCollector,
+    return MoreAsserts.assertContainsEvent(eventCollector,
                                               expectedMessage);
   }
 
   protected Event assertContainsEvent(String expectedMessage, Set<EventKind> kinds) {
-    return JunitTestUtils.assertContainsEvent(eventCollector,
+    return MoreAsserts.assertContainsEvent(eventCollector,
                                               expectedMessage,
                                               kinds);
   }
 
   protected void assertContainsEventWithFrequency(String expectedMessage,
       int expectedFrequency) {
-    JunitTestUtils.assertContainsEventWithFrequency(eventCollector, expectedMessage,
+    MoreAsserts.assertContainsEventWithFrequency(eventCollector, expectedMessage,
         expectedFrequency);
   }
 
   protected void assertDoesNotContainEvent(String expectedMessage) {
-    JunitTestUtils.assertDoesNotContainEvent(eventCollector,
+    MoreAsserts.assertDoesNotContainEvent(eventCollector,
                                              expectedMessage);
   }
 
   protected Event assertContainsEventWithWordsInQuotes(String... words) {
-    return JunitTestUtils.assertContainsEventWithWordsInQuotes(
+    return MoreAsserts.assertContainsEventWithWordsInQuotes(
         eventCollector, words);
   }
 
   protected void assertContainsEventsInOrder(String... expectedMessages) {
-    JunitTestUtils.assertContainsEventsInOrder(eventCollector, expectedMessages);
-  }
-
-  @SuppressWarnings({"unchecked", "varargs"})
-  protected static <T> void assertContainsSublist(List<T> arguments,
-                                                  T... expectedSublist) {
-    JunitTestUtils.assertContainsSublist(arguments, expectedSublist);
-  }
-
-  @SuppressWarnings({"unchecked", "varargs"})
-  protected static <T> void assertDoesNotContainSublist(List<T> arguments,
-                                                        T... expectedSublist) {
-    JunitTestUtils.assertDoesNotContainSublist(arguments, expectedSublist);
-  }
-
-  protected static <T> void assertContainsSubset(Iterable<T> arguments,
-                                                 Iterable<T> expectedSubset) {
-    JunitTestUtils.assertContainsSubset(arguments, expectedSubset);
+    MoreAsserts.assertContainsEventsInOrder(eventCollector, expectedMessages);
   }
 }

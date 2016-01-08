@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,24 +14,54 @@
 package com.google.devtools.build.skyframe;
 
 import com.google.common.base.Predicate;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
 
 import java.io.Serializable;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
 
-/**
- * An identifier for a {@code SkyFunction}.
- */
+/** An identifier for a {@code SkyFunction}. */
 public final class SkyFunctionName implements Serializable {
-  public static SkyFunctionName computed(String name) {
-    return new SkyFunctionName(name, true);
+
+  // In practice the number of unique SkyFunctionNames should be reasonably limited, use this cache
+  // to avoid accidentally creating many of the same.
+  private static final LoadingCache<String, SkyFunctionName> skyFunctionNameCache =
+      CacheBuilder.newBuilder()
+        .weakValues()
+        .build(
+            new CacheLoader<String, SkyFunctionName>() {
+              @Override
+              public SkyFunctionName load(String name) {
+                return new SkyFunctionName(name);
+              }
+            });
+
+  /**
+   * A well-known key type intended for testing only. The associated SkyKey should have a String
+   * argument.
+   */
+  // Needs to be after the cache is initialized.
+  public static final SkyFunctionName FOR_TESTING = SkyFunctionName.create("FOR_TESTING");
+
+  /** Create a SkyFunctionName identified by {@code name}. */
+  public static SkyFunctionName create(String name) {
+    try {
+      return skyFunctionNameCache.get(name);
+    } catch (ExecutionException e) {
+      throw new IllegalStateException("Unexpected exception creating SkyFunctionName", e);
+    }
   }
 
   private final String name;
-  private final boolean isComputed;
 
-  public SkyFunctionName(String name, boolean isComputed) {
+  private SkyFunctionName(String name) {
     this.name = name;
-    this.isComputed = isComputed;
+  }
+
+  public String getName() {
+    return name;
   }
 
   @Override
@@ -54,14 +84,6 @@ public final class SkyFunctionName implements Serializable {
   @Override
   public int hashCode() {
     return name.hashCode();
-  }
-
-  /**
-   * Returns whether the values of this type are computed. The computation of a computed value must
-   * be deterministic and may only access requested dependencies.
-   */
-  public boolean isComputed() {
-    return isComputed;
   }
 
   /**

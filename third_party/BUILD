@@ -2,7 +2,18 @@ package(default_visibility = ["//visibility:public"])
 
 filegroup(
     name = "srcs",
-    srcs = glob(["**"]),
+    srcs = glob(["**"]) + [
+        "//third_party/ijar:srcs",
+        "//third_party/iossim:srcs",
+        "//third_party/java/buck-ios-support:srcs",
+        "//third_party/java/dd_plist:srcs",
+        "//third_party/java/j2objc:srcs",
+        "//third_party/java/jarjar:srcs",
+        "//third_party/java/jdk/langtools:srcs",
+        "//third_party/py/concurrent:srcs",
+        "//third_party/py/gflags:srcs",
+        "//third_party/py/mock:srcs",
+    ],
 )
 
 filegroup(
@@ -14,6 +25,8 @@ filegroup(
         ":darwin": ["protobuf/protoc-osx-x86_32.exe"],
         ":k8": ["protobuf/protoc-linux-x86_64.exe"],
         ":piii": ["protobuf/protoc-linux-x86_32.exe"],
+        ":arm": ["protobuf/protoc-linux-arm32.exe"],
+        ":freebsd": ["protobuf/protoc-linux-x86_32.exe"],
     }),
 )
 
@@ -43,8 +56,31 @@ java_import(
 )
 
 java_import(
+    name = "android_common",
+    jars = [
+        "android_common/com.android.tools.build_builder_0.13.3.jar",
+        "android_common/com.android.tools.build_builder-model_0.13.3.jar",
+        "android_common/com.android.tools.build_manifest-merger_23.1.3.jar",
+        "android_common/com.android.tools_common_23.1.3.jar",
+        "android_common/com.android.tools_sdk-common_23.1.3.jar",
+        "android_common/com.android.tools_sdklib_23.1.3.jar",
+        "android_common/com.android.tools.layoutlib_layoutlib_23.1.3.jar",
+    ],
+)
+
+java_import(
+    name = "apache_commons_codec",
+    jars = ["apache_commons_codec/commons-codec-1.9.jar"],
+)
+
+java_import(
     name = "apache_commons_collections",
     jars = ["apache_commons_collections/commons-collections-3.2.1.jar"],
+)
+
+java_import(
+    name = "apache_commons_compress",
+    jars = ["apache_commons_compress/apache-commons-compress-1.9.jar"],
 )
 
 java_import(
@@ -74,7 +110,17 @@ java_import(
 
 java_import(
     name = "asm",
-    jars = ["asm/asm-5.0.3.jar"],
+    jars = ["asm/asm-5.0.4.jar"],
+)
+
+java_import(
+    name = "asm-commons",
+    jars = ["asm/asm-commons-5.0.4.jar"],
+)
+
+java_import(
+    name = "asm-util",
+    jars = ["asm/asm-util-5.0.4.jar"],
 )
 
 java_plugin(
@@ -147,19 +193,55 @@ java_import(
 )
 
 java_import(
+    name = "bytebuddy",
+    jars = ["bytebuddy/byte-buddy-dep-0.7-rc6.jar"],
+    deps = [
+        ":asm",
+        ":asm-commons",
+        ":asm-util",
+    ],
+)
+
+java_import(
     name = "gson",
     jars = ["gson/gson-2.2.4.jar"],
 )
 
 java_import(
     name = "error_prone",
-    jars = ["error_prone/error_prone_core-2.0.2.jar"],
+    jars = [
+        "error_prone/error_prone_core-2.0.6-20151001-884eec772c13541a7b1af249a68373cd9f30e488.jar",
+        "error_prone/error_prone_annotations-2.0.6-20151001-884eec772c13541a7b1af249a68373cd9f30e488.jar",
+    ],
+    exports = [
+        ":checker_framework_dataflow",
+        ":jformatstring",
+    ],
+)
+
+java_import(
+    name = "jformatstring",
+    jars = [
+        "jformatstring/jFormatString-3.0.0.jar",
+    ],
+)
+
+java_import(
+    name = "checker_framework_dataflow",
+    jars = [
+        "checker_framework_dataflow/dataflow-1.8.10.jar",
+    ],
 )
 
 # For bootstrapping JavaBuilder
 filegroup(
     name = "error_prone-jars",
-    srcs = ["error_prone/error_prone_core-2.0.2.jar"],
+    srcs = [
+        "checker_framework_dataflow/dataflow-1.8.10.jar",
+        "error_prone/error_prone_annotations-2.0.6-20151001-884eec772c13541a7b1af249a68373cd9f30e488.jar",
+        "error_prone/error_prone_core-2.0.6-20151001-884eec772c13541a7b1af249a68373cd9f30e488.jar",
+        "jformatstring/jFormatString-3.0.0.jar",
+    ],
 )
 
 java_import(
@@ -174,8 +256,18 @@ filegroup(
 )
 
 java_import(
+    name = "jgit",
+    jars = ["jgit/org.eclipse.jgit-4.0.1.201506240215-r.jar"],
+)
+
+java_import(
     name = "joda_time",
     jars = ["joda_time/joda-time-2.3.jar"],
+)
+
+java_import(
+    name = "jsch",
+    jars = ["jsch/jsch-0.1.51.jar"],
 )
 
 java_import(
@@ -195,11 +287,17 @@ java_import(
 )
 
 java_import(
+    name = "maven",
+    jars = glob(["maven/*.jar"]),
+)
+
+java_import(
     name = "maven_model",
     jars = [
         "maven_model/maven-aether-provider-3.2.3.jar",
         "maven_model/maven-model-3.2.3.jar",
         "maven_model/maven-model-builder-3.2.3.jar",
+        "maven_model/maven-repository-metadata-3.2.3.jar",
     ],
 )
 
@@ -230,6 +328,14 @@ filegroup(
 )
 
 java_import(
+    name = "slf4j",
+    jars = [
+        "slf4j/slf4j-api-1.7.7.jar",
+        "slf4j/slf4j-jdk14-1.7.7.jar",
+    ],
+)
+
+java_import(
     name = "tomcat_annotations_api",
     jars = ["tomcat_annotations_api/tomcat-annotations-api-8.0.5.jar"],
 )
@@ -256,7 +362,24 @@ java_import(
 
 java_import(
     name = "truth",
-    jars = ["truth/truth-0.24+.jar"],
+    jars = ["truth/truth-0.27.jar"],
+)
+
+cc_library(
+    name = "gtest",
+    srcs = [
+        "gtest/gtest-all.cc",
+        "gtest/gtest_main.cc",
+    ],
+    hdrs = [
+        "gtest/gtest.h",
+    ],
+    data = [
+        "//tools:test_sharding_compliant",
+    ],
+    includes = ["."],
+    # gtest detects pthread, and the linker fails without it.
+    linkopts = ["-lpthread"],
 )
 
 # To be used by the skylark example.
@@ -296,4 +419,14 @@ config_setting(
 config_setting(
     name = "piii",
     values = {"host_cpu": "piii"},
+)
+
+config_setting(
+    name = "arm",
+    values = {"host_cpu": "arm"},
+)
+
+config_setting(
+    name = "freebsd",
+    values = {"host_cpu": "freebsd"},
 )

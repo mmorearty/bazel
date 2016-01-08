@@ -1,4 +1,4 @@
-// Copyright 2015 Google Inc. All rights reserved.
+// Copyright 2015 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,10 +13,21 @@
 // limitations under the License.
 package com.google.devtools.build.lib.analysis.config;
 
+import static com.google.common.truth.Truth.assertThat;
+import static com.google.devtools.build.lib.analysis.config.ConfigRuleClasses.ConfigSettingRule;
+
+import com.google.common.collect.ImmutableMap;
+import com.google.devtools.build.lib.Constants;
 import com.google.devtools.build.lib.analysis.util.BuildViewTestCase;
-import com.google.devtools.build.lib.syntax.Label;
+import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.packages.Rule;
+import com.google.devtools.build.lib.rules.cpp.CppConfiguration;
+import com.google.devtools.build.lib.rules.java.Jvm;
+import com.google.devtools.build.lib.rules.python.PythonConfiguration;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsParser;
+
+import java.util.Map;
 
 /**
  * Tests for {@link ConfigSetting}.
@@ -200,5 +211,31 @@ public class ConfigSettingTest extends BuildViewTestCase {
     assertTrue(getConfigMatchingProvider("//test:match").matches());
     useConfiguration("--copt", "-Dbar", "--copt", "-Dfoo");
     assertTrue(getConfigMatchingProvider("//test:match").matches());
+  }
+
+  public void testSelectForDefaultCrosstoolTop() throws Exception {
+    String crosstoolTop = Constants.TOOLS_REPOSITORY + "//tools/cpp:toolchain";
+    scratchConfiguredTarget("a", "a",
+        "config_setting(name='cs', values={'crosstool_top': '" + crosstoolTop + "'})",
+        "sh_library(name='a', srcs=['a.sh'], deps=select({':cs': []}))");
+  }
+
+  public void testRequiredConfigFragmentMatcher() throws Exception {
+    scratch.file("test/BUILD",
+        "config_setting(",
+        "    name = 'match',",
+        "    values = {",
+        "        'copt': '-Dfoo',",
+        "        'javacopt': '-Dbar'",
+        "    })");
+
+    Map<String, Class<? extends BuildConfiguration.Fragment>> map = ImmutableMap.of(
+        "copt", CppConfiguration.class,
+        "unused", PythonConfiguration.class,
+        "javacopt", Jvm.class
+    );
+    assertThat(
+        ConfigSettingRule.requiresConfigurationFragments((Rule) getTarget("//test:match"), map))
+        .containsExactly(CppConfiguration.class, Jvm.class);
   }
 }

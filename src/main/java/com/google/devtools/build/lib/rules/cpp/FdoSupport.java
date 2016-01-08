@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@ package com.google.devtools.build.lib.rules.cpp;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
-import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMultimap;
@@ -29,11 +28,12 @@ import com.google.devtools.build.lib.actions.PackageRootResolver;
 import com.google.devtools.build.lib.actions.Root;
 import com.google.devtools.build.lib.analysis.AnalysisEnvironment;
 import com.google.devtools.build.lib.analysis.RuleContext;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadHostile;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
+import com.google.devtools.build.lib.rules.cpp.CcToolchainFeatures.FeatureConfiguration;
 import com.google.devtools.build.lib.skyframe.FileValue;
 import com.google.devtools.build.lib.skyframe.PrecomputedValue;
-import com.google.devtools.build.lib.syntax.Label;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -43,11 +43,7 @@ import com.google.devtools.build.lib.view.config.crosstool.CrosstoolConfig.LipoM
 import com.google.devtools.build.skyframe.SkyFunction;
 
 import java.io.IOException;
-import java.io.Serializable;
-import java.util.ArrayList;
 import java.util.Collection;
-import java.util.List;
-import java.util.regex.Pattern;
 import java.util.zip.ZipException;
 
 /**
@@ -115,7 +111,7 @@ import java.util.zip.ZipException;
  * {@code CachingAnalysisEnvironment.allowRegisteringActions}, which causes actions to be silently
  * discarded after configured targets are created.
  */
-public class FdoSupport implements Serializable {
+public class FdoSupport {
 
   /**
    * Path within profile data .zip files that is considered the root of the
@@ -124,10 +120,17 @@ public class FdoSupport implements Serializable {
   private static final PathFragment ZIP_ROOT = new PathFragment("/");
 
   /**
-   * Returns true if the give fdoFile represents an AutoFdo profile.
+   * Returns true if the given fdoFile represents an AutoFdo profile.
    */
   public static final boolean isAutoFdo(String fdoFile) {
     return CppFileTypes.GCC_AUTO_PROFILE.matches(fdoFile);
+  }
+
+  /**
+   * Returns true if the given fdoFile represents an LLVM profile.
+   */
+  public static final boolean isLLVMFdo(String fdoFile) {
+    return CppFileTypes.LLVM_PROFILE.matches(fdoFile);
   }
 
   /**
@@ -176,6 +179,12 @@ public class FdoSupport implements Serializable {
   private final boolean useAutoFdo;
 
   /**
+   * Flag indicating whether to use LLVM instrumentation-based FDO (as
+   * opposed to GCC instrumentation-based FDO).
+   */
+  private final boolean useLLVMFdo;
+
+  /**
    * The {@code .gcda} files that have been extracted from the ZIP file,
    * relative to the root of the ZIP file.
    *
@@ -212,14 +221,15 @@ public class FdoSupport implements Serializable {
         : Root.asDerivedRoot(execRoot, execRoot.getRelative("blaze-fdo"));
     this.fdoRootExecPath = fdoProfile == null
         ? null
-        : fdoRoot.getExecPath().getRelative(new PathFragment("_fdo").getChild(
-            FileSystemUtils.removeExtension(fdoProfile.getBaseName())));
+        : fdoRoot.getExecPath().getRelative(FileSystemUtils.removeExtension(
+            new PathFragment("_fdo").getChild(fdoProfile.getBaseName())));
     this.fdoPath = fdoProfile == null
         ? null
-        : new PathFragment("_fdo").getChild(
-            FileSystemUtils.removeExtension(fdoProfile.getBaseName()));
+        : FileSystemUtils.removeExtension(new PathFragment("_fdo").getChild(
+            fdoProfile.getBaseName()));
     this.lipoMode = lipoMode;
     this.useAutoFdo = fdoProfile != null && isAutoFdo(fdoProfile.getBaseName());
+    this.useLLVMFdo = fdoProfile != null && isLLVMFdo(fdoProfile.getBaseName());
   }
 
   public Root getFdoRoot() {
@@ -279,6 +289,9 @@ public class FdoSupport implements Serializable {
         }
         FileSystemUtils.ensureSymbolicLink(
             execRoot.getRelative(getAutoProfilePath()), fdoProfile);
+      } else if (useLLVMFdo) {
+        FileSystemUtils.ensureSymbolicLink(
+            execRoot.getRelative(getLLVMProfilePath()), fdoProfile);
       } else {
         Path zipFilePath = new ZipFileSystem(fdoProfile).getRootDirectory();
         if (!zipFilePath.getRelative("blaze-out").isDirectory()) {
@@ -440,16 +453,17 @@ public class FdoSupport implements Serializable {
   }
 
   /**
-   * Configures a compile action builder by adding command line options and
+   * Configures a compile action builder by setting up command line options and
    * auxiliary inputs according to the FDO configuration. This method does
    * nothing If FDO is disabled.
    */
   @ThreadSafe
-  public void configureCompilation(CppCompileActionBuilder builder, RuleContext ruleContext,
-      AnalysisEnvironment env, Label lipoLabel, PathFragment sourceName, final Pattern nocopts,
-      boolean usePic, LipoContextProvider lipoInputProvider) {
+  public void configureCompilation(CppCompileActionBuilder builder,
+      CcToolchainFeatures.Variables.Builder buildVariables, RuleContext ruleContext,
+      PathFragment sourceName, boolean usePic, FeatureConfiguration featureConfiguration) {
     // It is a bug if this method is called with useLipo if lipo is disabled. However, it is legal
     // if is is called with !useLipo, even though lipo is enabled.
+    LipoContextProvider lipoInputProvider = CppHelper.getLipoContextProvider(ruleContext);
     Preconditions.checkArgument(lipoInputProvider == null || isLipoEnabled());
 
     // FDO is disabled -> do nothing.
@@ -457,64 +471,56 @@ public class FdoSupport implements Serializable {
       return;
     }
 
-    List<String> fdoCopts = new ArrayList<>();
-    // Instrumentation phase
-    if (fdoInstrument != null) {
-      fdoCopts.add("-fprofile-generate=" + fdoInstrument.getPathString());
-      fdoCopts.add("-fno-data-sections");
-      if (lipoMode != LipoMode.OFF) {
-        fdoCopts.add("-fripa");
-      }
+    if (featureConfiguration.isEnabled(CppRuleClasses.FDO_INSTRUMENT)) {
+      buildVariables.addVariable("fdo_instrument_path",
+          fdoInstrument.getPathString());
     }
 
     // Optimization phase
     if (fdoRoot != null) {
+      AnalysisEnvironment env = ruleContext.getAnalysisEnvironment();
       // Declare dependency on contents of zip file.
       if (env.getSkyframeEnv().valuesMissing()) {
         return;
       }
       Iterable<Artifact> auxiliaryInputs = getAuxiliaryInputs(
-          ruleContext, env, lipoLabel, sourceName, usePic, lipoInputProvider);
+          ruleContext, env, sourceName, usePic, lipoInputProvider);
       builder.addMandatoryInputs(auxiliaryInputs);
       if (!Iterables.isEmpty(auxiliaryInputs)) {
-        if (useAutoFdo) {
-          fdoCopts.add("-fauto-profile=" + getAutoProfilePath().getPathString());
-        } else {
-          fdoCopts.add("-fprofile-use=" + fdoRootExecPath);
+        if (featureConfiguration.isEnabled(CppRuleClasses.AUTOFDO)) {
+          buildVariables.addVariable("fdo_profile_path",
+              getAutoProfilePath().getPathString());
         }
-        fdoCopts.add("-fprofile-correction");
-        if (lipoInputProvider != null) {
-          fdoCopts.add("-fripa");
+        if (featureConfiguration.isEnabled(CppRuleClasses.FDO_OPTIMIZE)) {
+          if (useLLVMFdo) {
+            buildVariables.addVariable("fdo_profile_path",
+                getLLVMProfilePath().getPathString());
+          } else {
+            buildVariables.addVariable("fdo_profile_path",
+                fdoRootExecPath.getPathString());
+          }
         }
       }
     }
-    Iterable<String> filteredCopts = fdoCopts;
-    if (nocopts != null) {
-      // Filter fdoCopts with nocopts if they exist.
-      filteredCopts = Iterables.filter(fdoCopts, new Predicate<String>() {
-        @Override
-        public boolean apply(String copt) {
-          return !nocopts.matcher(copt).matches();
-        }
-      });
-    }
-    builder.addCopts(0, filteredCopts);
   }
 
   /**
    * Returns the auxiliary files that need to be added to the {@link CppCompileAction}.
    */
   private Iterable<Artifact> getAuxiliaryInputs(
-      RuleContext ruleContext, AnalysisEnvironment env, Label lipoLabel, PathFragment sourceName,
+      RuleContext ruleContext, AnalysisEnvironment env, PathFragment sourceName,
       boolean usePic, LipoContextProvider lipoContextProvider) {
     // If --fdo_optimize was not specified, we don't have any additional inputs.
     if (fdoProfile == null) {
       return ImmutableSet.of();
-    } else if (useAutoFdo) {
+    } else if (useAutoFdo || useLLVMFdo) {
       ImmutableSet.Builder<Artifact> auxiliaryInputs = ImmutableSet.builder();
 
+      PathFragment profileRootRelativePath = (useLLVMFdo)
+          ? getLLVMProfileRootRelativePath()
+          : getAutoProfileRootRelativePath();
       Artifact artifact = env.getDerivedArtifact(
-          fdoPath.getRelative(getAutoProfileRootRelativePath()), fdoRoot);
+          fdoPath.getRelative(profileRootRelativePath), fdoRoot);
       env.registerAction(new FdoStubAction(ruleContext.getActionOwner(), artifact));
       auxiliaryInputs.add(artifact);
       if (lipoContextProvider != null) {
@@ -527,6 +533,7 @@ public class FdoSupport implements Serializable {
       PathFragment objectName =
           FileSystemUtils.replaceExtension(sourceName, usePic ? ".pic.o" : ".o");
 
+      Label lipoLabel = ruleContext.getLabel();
       auxiliaryInputs.addAll(
           getGcdaArtifactsForObjectFileName(ruleContext, env, objectName, lipoLabel));
 
@@ -617,6 +624,15 @@ public class FdoSupport implements Serializable {
     return new PathFragment(fdoProfile.getBaseName());
   }
 
+
+  private PathFragment getLLVMProfilePath() {
+    return fdoRootExecPath.getRelative(getLLVMProfileRootRelativePath());
+  }
+
+  private PathFragment getLLVMProfileRootRelativePath() {
+    return new PathFragment(fdoProfile.getBaseName());
+  }
+
   /**
    * Returns whether LIPO is enabled.
    */
@@ -634,14 +650,17 @@ public class FdoSupport implements Serializable {
   }
 
   /**
-   * Returns an immutable list of command line arguments to add to the linker
-   * command line. If FDO is disabled, and empty list is returned.
+   * Adds the FDO profile output path to the variable builder.
+   * If FDO is disabled, no build variable is added.
    */
   @ThreadSafe
-  public ImmutableList<String> getLinkOptions() {
-    return fdoInstrument != null
-        ? ImmutableList.of("-fprofile-generate=" + fdoInstrument.getPathString())
-        : ImmutableList.<String>of();
+  public void getLinkOptions(FeatureConfiguration featureConfiguration,
+      CcToolchainFeatures.Variables.Builder buildVariables
+      ) {
+    if (featureConfiguration.isEnabled(CppRuleClasses.FDO_INSTRUMENT)) {
+      buildVariables.addVariable("fdo_instrument_path",
+          fdoInstrument.getPathString());
+    }
   }
 
   /**

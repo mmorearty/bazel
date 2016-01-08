@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2015 Google Inc. All rights reserved.
+# Copyright 2015 The Bazel Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,6 +31,11 @@ if [ "${MACHINE_TYPE}" = 'amd64' -o "${MACHINE_TYPE}" = 'x86_64' ]; then
   MACHINE_IS_64BIT='yes'
 fi
 
+MACHINE_IS_ARM='no'
+if [ "${MACHINE_TYPE}" = 'arm' -o "${MACHINE_TYPE}" = 'armv7l' ]; then
+  MACHINE_IS_ARM='yes'
+fi
+
 ATEXIT_=""
 function atexit() {
   ATEXIT_="$1; ${ATEXIT_}"
@@ -53,14 +58,20 @@ atexit "if [ -f ${phasefile} ]; then echo >&2; cat ${phasefile} >&2; fi"
 
 function run_silent() {
   echo "${@}" >${errfile}
-  "${@}" >>${errfile} 2>&1
+  # TODO(kchodorow): figure out why this doesn't exit on a non-zero exit code,
+  # even though errexit is set.
+  "${@}" >>${errfile} 2>&1 || exit $?
   rm ${errfile}
 }
 
 function fail() {
+  local exitCode=$?
+  if [[ "$exitCode" = "0" ]]; then
+    exitCode=1
+  fi
   echo >&2
   echo "$1" >&2
-  exit 1
+  exit $exitCode
 }
 
 function display() {
@@ -81,6 +92,7 @@ function clear_log() {
 
 LEAVES="\xF0\x9F\x8D\x83"
 INFO="\033[32mINFO\033[0m:"
+WARNING="\033[31mWARN\033[0m:"
 
 first_step=1
 function new_step() {
@@ -109,3 +121,26 @@ else
     md5sum $1
   }
 fi
+
+# Gets the java version from JAVA_HOME
+# Sets JAVAC and JAVAC_VERSION with respectively the path to javac and
+# the version of javac.
+function get_java_version() {
+  test -z "$JAVA_HOME" && fail "JDK not found, please set \$JAVA_HOME."
+  JAVAC="${JAVA_HOME}/bin/javac"
+  [[ -x "${JAVAC}" ]] \
+    || fail "JAVA_HOME ($JAVA_HOME) is not a path to a working JDK."
+
+  JAVAC_VERSION=$("${JAVAC}" -version 2>&1)
+  if [[ "$JAVAC_VERSION" =~ ^"javac "(1\.([789]|[1-9][0-9])).*$ ]]; then
+    JAVAC_VERSION=${BASH_REMATCH[1]}
+  else
+    fail "Cannot determine JDK version, please set \$JAVA_HOME."
+  fi
+}
+
+# Return the target that a bind point to, using Bazel query.
+function get_bind_target() {
+  $BAZEL --bazelrc=${BAZELRC} --nomaster_bazelrc \
+    query "deps($1, 1) - $1"
+}

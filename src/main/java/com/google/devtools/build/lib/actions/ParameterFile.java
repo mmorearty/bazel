@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@ package com.google.devtools.build.lib.actions;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.vfs.PathFragment;
-
 
 /**
  * Support for parameter file generation (as used by gcc and other tools, e.g.
@@ -64,10 +63,17 @@ public class ParameterFile {
   private ParameterFile() {
   }
   /**
-   * Derives an exec path from a given exec path by appending <code>".params"</code>.
+   * Derives an path from a given path by appending <code>".params"</code>.
    */
   public static PathFragment derivePath(PathFragment original) {
-    return original.replaceName(original.getBaseName() + "-2.params");
+    return derivePath(original, "2");
+  }
+
+  /**
+   * Derives an path from a given path by appending <code>".params"</code>.
+   */
+  public static PathFragment derivePath(PathFragment original, String flavor) {
+    return original.replaceName(original.getBaseName() + "-" + flavor + ".params");
   }
 
 }

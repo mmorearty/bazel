@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,13 +14,12 @@
 package com.google.devtools.build.lib.query2.engine;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Sets;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.Argument;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.ArgumentType;
 import com.google.devtools.build.lib.query2.engine.QueryEnvironment.QueryFunction;
 
-import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -54,35 +53,31 @@ final class DepsFunction implements QueryFunction {
    * Breadth-first search from the arguments.
    */
   @Override
-  public <T> Set<T> eval(QueryEnvironment<T> env, QueryExpression expression, List<Argument> args)
-      throws QueryException {
-    Set<T> argumentValue = args.get(0).getExpression().eval(env);
-    int depthBound = args.size() > 1 ? args.get(1).getInteger() : Integer.MAX_VALUE;
-    env.buildTransitiveClosure(expression, argumentValue, depthBound);
+  public <T> void eval(final QueryEnvironment<T> env, final QueryExpression expression,
+      List<Argument> args, final Callback<T> callback)
+      throws QueryException, InterruptedException {
+    final int depthBound = args.size() > 1 ? args.get(1).getInteger() : Integer.MAX_VALUE;
+    final Uniquifier<T> uniquifier = env.createUniquifier();
+    env.eval(args.get(0).getExpression(), new Callback<T>() {
+      @Override
+      public void process(Iterable<T> partialResult) throws QueryException, InterruptedException {
+        Collection<T> current = Sets.newHashSet(partialResult);
+        env.buildTransitiveClosure(expression, (Set<T>) current, depthBound);
 
-    Set<T> visited = new LinkedHashSet<>();
-    Collection<T> current = argumentValue;
-
-    // We need to iterate depthBound + 1 times.
-    for (int i = 0; i <= depthBound; i++) {
-      List<T> next = new ArrayList<>();
-      for (T node : current) {
-        if (!visited.add(node)) {
-          // Already visited; if we see a node in a later round, then we don't need to visit it
-          // again, because the depth at which we see it at must be greater than or equal to the
-          // last visit.
-          continue;
+        // We need to iterate depthBound + 1 times.
+        for (int i = 0; i <= depthBound; i++) {
+          // Filter already visited nodes: if we see a node in a later round, then we don't need to
+          // visit it again, because the depth at which we see it at must be greater than or equal
+          // to the last visit.
+          ImmutableList<T> toProcess = uniquifier.unique(current);
+          callback.process(toProcess);
+          current = ImmutableList.copyOf(env.getFwdDeps(toProcess));
+          if (current.isEmpty()) {
+            // Exit when there are no more nodes to visit.
+            break;
+          }
         }
-
-        next.addAll(env.getFwdDeps(node));
       }
-      if (next.isEmpty()) {
-        // Exit when there are no more nodes to visit.
-        break;
-      }
-      current = next;
-    }
-
-    return visited;
+    });
   }
 }

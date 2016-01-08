@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,19 +21,26 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.ParameterFile.ParameterFileType;
 import com.google.devtools.build.lib.analysis.AnalysisUtils;
+import com.google.devtools.build.lib.analysis.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
+import com.google.devtools.build.lib.analysis.actions.CustomCommandLine;
+import com.google.devtools.build.lib.analysis.actions.SpawnAction;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration.StrictDepsMode;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.rules.java.JavaCompilationArgs.ClasspathType;
 import com.google.devtools.build.lib.rules.java.JavaConfiguration.JavaClasspathMode;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
+import com.google.devtools.build.lib.vfs.PathFragment;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import javax.annotation.Nullable;
 
@@ -44,6 +51,12 @@ import javax.annotation.Nullable;
  * Also supports the creation of resource and source only Jars.
  */
 public class JavaCompilationHelper extends BaseJavaCompilationHelper {
+
+  /**
+   * Maximum memory to use for GenClass for generating the gen jar.
+   */
+  private static final String GENCLASS_MAX_MEMORY = "-Xmx64m";
+
   private Artifact outputDepsProtoArtifact;
   private JavaTargetAttributes.Builder attributes;
   private JavaTargetAttributes builtAttributes;
@@ -79,14 +92,20 @@ public class JavaCompilationHelper extends BaseJavaCompilationHelper {
    * Creates the Action that compiles Java source files.
    *
    * @param outputJar the class jar Artifact to create with the Action
+   * @param manifestProtoOutput the output artifact for the manifest proto emitted from JavaBuilder
    * @param gensrcOutputJar the generated sources jar Artifact to create with the Action
    *        (null if no sources will be generated).
    * @param outputDepsProto the compiler-generated jdeps file to create with the Action
    *        (null if not requested)
    * @param outputMetadata metadata file (null if no instrumentation is needed).
    */
-  public void createCompileAction(Artifact outputJar, @Nullable Artifact gensrcOutputJar,
-      @Nullable Artifact outputDepsProto, @Nullable Artifact outputMetadata) {
+  public void createCompileAction(
+      Artifact outputJar,
+      Artifact manifestProtoOutput,
+      @Nullable Artifact gensrcOutputJar,
+      @Nullable Artifact outputDepsProto,
+      @Nullable Artifact outputMetadata) {
+
     JavaTargetAttributes attributes = getAttributes();
     JavaCompileAction.Builder builder = createJavaCompileActionBuilder(semantics);
     builder.setClasspathEntries(attributes.getCompileTimeClassPath());
@@ -103,6 +122,7 @@ public class JavaCompilationHelper extends BaseJavaCompilationHelper {
     builder.setJavaBuilderJar(getJavaBuilderJar());
     builder.addTranslations(getTranslations());
     builder.setOutputJar(outputJar);
+    builder.setManifestProtoOutput(manifestProtoOutput);
     builder.setGensrcOutputJar(gensrcOutputJar);
     builder.setOutputDepsProto(outputDepsProto);
     builder.setMetadata(outputMetadata);
@@ -112,9 +132,9 @@ public class JavaCompilationHelper extends BaseJavaCompilationHelper {
     builder.setJavacOpts(customJavacOpts);
     builder.setJavacJvmOpts(customJavacJvmOpts);
     builder.setCompressJar(true);
-    builder.setClassDirectory(outputDir(outputJar));
     builder.setSourceGenDirectory(sourceGenDir(outputJar));
     builder.setTempDirectory(tempDir(outputJar));
+    builder.setClassDirectory(classDir(outputJar));
     builder.addProcessorPaths(attributes.getProcessorPath());
     builder.addProcessorNames(attributes.getProcessorNames());
     builder.setStrictJavaDeps(attributes.getStrictJavaDeps());
@@ -130,13 +150,22 @@ public class JavaCompilationHelper extends BaseJavaCompilationHelper {
    * coverage.
    *
    * @param outputJar the class jar Artifact to create with the Action
+   * @param manifestProtoOutput the output artifact for the manifest proto emitted from JavaBuilder
    * @param gensrcJar the generated sources jar Artifact to create with the Action
    * @param outputDepsProto the compiler-generated jdeps file to create with the Action
    * @param javaArtifactsBuilder the build to store the instrumentation metadata in
    */
-  public void createCompileActionWithInstrumentation(Artifact outputJar, Artifact gensrcJar,
-      Artifact outputDepsProto, JavaCompilationArtifacts.Builder javaArtifactsBuilder) {
-    createCompileAction(outputJar, gensrcJar, outputDepsProto,
+  public void createCompileActionWithInstrumentation(
+      Artifact outputJar,
+      Artifact manifestProtoOutput,
+      @Nullable Artifact gensrcJar,
+      @Nullable Artifact outputDepsProto,
+      JavaCompilationArtifacts.Builder javaArtifactsBuilder) {
+    createCompileAction(
+        outputJar,
+        manifestProtoOutput,
+        gensrcJar,
+        outputDepsProto,
         createInstrumentationMetadata(outputJar, javaArtifactsBuilder));
   }
 
@@ -153,7 +182,7 @@ public class JavaCompilationHelper extends BaseJavaCompilationHelper {
     Artifact instrumentationMetadata = null;
     if (shouldInstrumentJar()) {
       instrumentationMetadata = semantics.createInstrumentationMetadataArtifact(
-          getAnalysisEnvironment(), outputJar);
+          getRuleContext(), outputJar);
 
       if (instrumentationMetadata != null) {
         javaArtifactsBuilder.addInstrumentationMetadata(instrumentationMetadata);
@@ -170,14 +199,21 @@ public class JavaCompilationHelper extends BaseJavaCompilationHelper {
   }
 
   /**
-   * Returns the artifact for a jar file containing source files that were generated by an
-   * annotation processor or null if no annotation processors are used.
+   * Returns the artifact for a jar file containing class files that were generated by
+   * annotation processors.
    */
-  public Artifact createGensrcJar(@Nullable Artifact outputJar) {
-    if (!usesAnnotationProcessing()) {
-      return null;
-    }
-    return getAnalysisEnvironment().getDerivedArtifact(
+  public Artifact createGenJar(Artifact outputJar) {
+    return getRuleContext().getDerivedArtifact(
+        FileSystemUtils.appendWithoutExtension(outputJar.getRootRelativePath(), "-gen"),
+        outputJar.getRoot());
+  }
+
+  /**
+   * Returns the artifact for a jar file containing source files that were generated by
+   * annotation processors.
+   */
+  public Artifact createGensrcJar(Artifact outputJar) {
+    return getRuleContext().getDerivedArtifact(
         FileSystemUtils.appendWithoutExtension(outputJar.getRootRelativePath(), "-gensrc"),
         outputJar.getRoot());
   }
@@ -185,14 +221,54 @@ public class JavaCompilationHelper extends BaseJavaCompilationHelper {
   /**
    * Returns whether this target uses annotation processing.
    */
-  private boolean usesAnnotationProcessing() {
+  public boolean usesAnnotationProcessing() {
     JavaTargetAttributes attributes = getAttributes();
     return getJavacOpts().contains("-processor") || !attributes.getProcessorNames().isEmpty();
   }
 
-  public Artifact getOutputDepsProtoArtifact() {
-    return outputDepsProtoArtifact;
+  /**
+   * Returns the artifact for the manifest proto emitted from JavaBuilder. For example, for a
+   * class jar foo.jar, returns "foo.jar_manifest_proto".
+   *
+   * @param outputJar The artifact for the class jar emitted form JavaBuilder 
+   * @return The output artifact for the manifest proto emitted from JavaBuilder 
+   */
+  public Artifact createManifestProtoOutput(Artifact outputJar) {
+    return getRuleContext().getDerivedArtifact(
+        FileSystemUtils.appendExtension(outputJar.getRootRelativePath(), "_manifest_proto"),
+        outputJar.getRoot());
   }
+
+  /**
+   * Creates the action for creating the gen jar.
+   *
+   * @param classJar The artifact for the class jar emitted from JavaBuilder
+   * @param manifestProto The artifact for the manifest proto emitted from JavaBuilder
+   * @param genClassJar The artifact for the gen jar to output
+   */
+  public void createGenJarAction(Artifact classJar, Artifact manifestProto,
+      Artifact genClassJar) {
+    getRuleContext().registerAction(new SpawnAction.Builder()
+      .addInput(manifestProto)
+      .addInput(classJar)
+      .addOutput(genClassJar)
+      .addTransitiveInputs(JavaCompilationHelper.getHostJavabaseInputs(getRuleContext()))
+      .setJarExecutable(
+          getRuleContext().getHostConfiguration().getFragment(Jvm.class).getJavaExecutable(),
+          getRuleContext().getPrerequisiteArtifact("$genclass", Mode.HOST),
+          ImmutableList.of("-client", GENCLASS_MAX_MEMORY))
+      .setCommandLine(CustomCommandLine.builder()
+          .addExecPath("--manifest_proto", manifestProto)
+          .addExecPath("--class_jar", classJar)
+          .addExecPath("--output_jar", genClassJar)
+          .add("--temp_dir").addPath(tempDir(genClassJar))
+          .build())
+      .useParameterFile(ParameterFileType.SHELL_QUOTED)
+      .setProgressMessage("Building genclass jar " + genClassJar.prettyPrint())
+      .setMnemonic("JavaSourceJar")
+      .build(getRuleContext()));
+  }
+
   /**
    * Creates the jdeps file artifact if needed. Returns null if the target can't emit dependency
    * information (i.e there is no compilation step, the target acts as an alias).
@@ -206,7 +282,7 @@ public class JavaCompilationHelper extends BaseJavaCompilationHelper {
       return null;
     }
 
-    outputDepsProtoArtifact = getAnalysisEnvironment().getDerivedArtifact(
+    outputDepsProtoArtifact = getRuleContext().getDerivedArtifact(
           FileSystemUtils.replaceExtension(outputJar.getRootRelativePath(), ".jdeps"),
           outputJar.getRoot());
 
@@ -245,8 +321,8 @@ public class JavaCompilationHelper extends BaseJavaCompilationHelper {
     builder.setLangtoolsJar(getLangtoolsJar());
     builder.addTranslations(getTranslations());
     builder.setCompressJar(true);
-    builder.setClassDirectory(outputDir(resourceJar));
     builder.setTempDirectory(tempDir(resourceJar));
+    builder.setClassDirectory(classDir(resourceJar));
     builder.setJavaBuilderJar(getJavaBuilderJar());
     builder.setJavacOpts(getDefaultJavacOptsFromRule(getRuleContext()));
     builder.setJavacJvmOpts(
@@ -271,14 +347,20 @@ public class JavaCompilationHelper extends BaseJavaCompilationHelper {
     if (gensrcJar != null) {
       resourceJars.add(gensrcJar);
     }
-    createSourceJarAction(semantics, attributes.getSourceFiles(), resourceJars, outputJar);
+    Map<PathFragment, Artifact> resources = new LinkedHashMap<>();
+    for (Artifact sourceFile : attributes.getSourceFiles()) {
+      resources.put(semantics.getDefaultJavaResourcePath(sourceFile.getRootRelativePath()), sourceFile);
+    }
+    createSourceJarAction(resources, resourceJars, outputJar);
   }
 
   /**
    * Creates the actions that produce the interface jar. Adds the jar artifacts to the given
    * JavaCompilationArtifacts builder.
+   *
+   * @return The ijar (if requested), or class jar (if not)
    */
-  public void createCompileTimeJarAction(Artifact runtimeJar,
+  public Artifact createCompileTimeJarAction(Artifact runtimeJar,
       @Nullable Artifact runtimeDeps, JavaCompilationArtifacts.Builder builder) {
     Artifact jar = getJavaConfiguration().getUseIjars()
         ? createIjarAction(runtimeJar, false)
@@ -287,6 +369,7 @@ public class JavaCompilationHelper extends BaseJavaCompilationHelper {
 
     builder.addCompileTimeJar(jar);
     builder.setCompileTimeDependencies(deps);
+    return jar;
   }
 
   /**

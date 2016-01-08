@@ -1,4 +1,4 @@
-# Copyright 2014 Google Inc. All rights reserved.
+# Copyright 2014 The Bazel Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -64,7 +64,7 @@ def py_binary_impl(ctx):
               "  mkdir -p %s && " % " ".join(dirs) +
               "  find . -type d -exec touch -t 198001010000 '{}'/__init__.py ';' && " +
               "  chmod +w main.zip && " +
-              "  %s -qR main.zip $(find . -type f ) ) && " % (ZIP_PATH) +
+              "  %s -quR main.zip $(find . -type f ) ) && " % (ZIP_PATH) +
               " mv %s/main.zip %s " % (outdir, deploy_zip.path))
 
   ctx.action(
@@ -89,9 +89,7 @@ def py_binary_impl(ctx):
   return struct(files = files_to_build, runfiles = runfiles)
 
 
-py_srcs_attr = attr.label_list(
-    flags=["DIRECT_COMPILE_TIME_INPUT"],
-    allow_files = py_file_types)
+py_srcs_attr = attr.label_list(allow_files = py_file_types)
 
 py_deps_attr = attr.label_list(
     providers = ["transitive_py_files"],
@@ -117,6 +115,7 @@ py_binary = rule(
 
 py_test = rule(
   py_binary_impl,
+  test = True,
   executable = True,
   attrs = py_attrs,
   outputs = py_binary_outputs)

@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,7 +13,9 @@
 // limitations under the License.
 package com.google.devtools.build.lib.analysis;
 
+import com.google.common.cache.Cache;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildConfigurationCollection;
 import com.google.devtools.build.lib.analysis.config.BuildOptions;
 import com.google.devtools.build.lib.analysis.config.ConfigurationFactory;
 import com.google.devtools.build.lib.analysis.config.InvalidConfigurationException;
@@ -32,6 +34,8 @@ public interface ConfigurationCollectionFactory {
    * <p>Also it may create a set of BuildConfigurations and define a transition table over them.
    * All configurations during a build should be accessible from this top-level configuration
    * via configuration transitions.
+   * @param configurationFactory the configuration factory
+   * @param cache a cache for BuildConfigurations
    * @param loadedPackageProvider the package provider
    * @param buildOptions top-level build options representing the command-line
    * @param errorEventListener the event listener for errors
@@ -43,8 +47,21 @@ public interface ConfigurationCollectionFactory {
   @Nullable
   BuildConfiguration createConfigurations(
       ConfigurationFactory configurationFactory,
+      Cache<String, BuildConfiguration> cache,
       PackageProviderForConfigurations loadedPackageProvider,
       BuildOptions buildOptions,
       EventHandler errorEventListener,
       boolean performSanityCheck) throws InvalidConfigurationException;
+
+  /**
+   * Returns the module the given configuration should use for choosing dynamic transitions.
+   *
+   * <p>We can presumably factor away this method once static global configurations are properly
+   * deprecated. But for now we retain the
+   * {@link com.google.devtools.build.lib.analysis.config.BuildConfigurationCollection.Transitions}
+   * interface since that's the same place where static transition logic is determined and
+   * {@link BuildConfigurationCollection.Transitions#configurationHook}
+   * is still used.
+   */
+  BuildConfigurationCollection.Transitions getDynamicTransitionLogic(BuildConfiguration config);
 }

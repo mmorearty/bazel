@@ -1,4 +1,4 @@
-// Copyright 2015 Google Inc. All rights reserved.
+// Copyright 2015 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 
 package com.google.devtools.build.lib.bazel.repository;
 
-import com.google.devtools.build.lib.bazel.repository.DecompressorValue.DecompressorDescriptor;
-import com.google.devtools.build.lib.bazel.repository.RepositoryFunction.RepositoryFunctionException;
+import com.google.common.base.Joiner;
+import com.google.devtools.build.lib.rules.repository.RepositoryFunction.RepositoryFunctionException;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.skyframe.SkyFunction;
@@ -34,7 +34,7 @@ import javax.annotation.Nullable;
  */
 public class JarFunction implements SkyFunction {
 
-  public static final SkyFunctionName NAME = SkyFunctionName.computed("JAR_FUNCTION");
+  public static final SkyFunctionName NAME = SkyFunctionName.create("JAR_FUNCTION");
 
   /**
    * The .jar can be used compressed, so this just exposes it in a way Bazel can use.
@@ -57,7 +57,7 @@ public class JarFunction implements SkyFunction {
           "# DO NOT EDIT: automatically generated WORKSPACE file for %s rule %s\n",
           descriptor.targetKind(), descriptor.targetName()));
       // external/some-name/jar.
-      Path jarDirectory = descriptor.repositoryPath().getRelative("jar");
+      Path jarDirectory = descriptor.repositoryPath().getRelative(getPackageName());
       FileSystemUtils.createDirectoryAndParents(jarDirectory);
       // external/some-name/repository/jar/foo.jar is a symbolic link to the jar in
       // external/some-name.
@@ -67,19 +67,36 @@ public class JarFunction implements SkyFunction {
       }
       // external/some-name/repository/jar/BUILD defines the //jar target.
       Path buildFile = jarDirectory.getRelative("BUILD");
-      FileSystemUtils.writeLinesAs(buildFile, Charset.forName("UTF-8"),
-          "# DO NOT EDIT: automatically generated BUILD file for " + descriptor.targetKind()
-              + " rule " + descriptor.targetName(),
-          "java_import(",
-          "    name = 'jar',",
-          "    jars = ['" + baseName + "'],",
-          "    visibility = ['//visibility:public']",
-          ")");
+      FileSystemUtils.writeLinesAs(
+          buildFile,
+          Charset.forName("UTF-8"),
+          "# DO NOT EDIT: automatically generated BUILD file for "
+              + descriptor.targetKind()
+              + " rule "
+              + descriptor.targetName(),
+          createBuildFile(baseName));
+      if (descriptor.executable()) {
+        descriptor.archivePath().chmod(0755);
+      }
     } catch (IOException e) {
       throw new RepositoryFunctionException(new IOException(
           "Error auto-creating jar repo structure: " + e.getMessage()), Transience.TRANSIENT);
     }
     return new DecompressorValue(descriptor.repositoryPath());
+  }
+
+  protected String getPackageName() {
+    return "jar";
+  }
+
+  protected String createBuildFile(String baseName) {
+    return Joiner.on("\n")
+        .join(
+            "java_import(",
+            "    name = 'jar',",
+            "    jars = ['" + baseName + "'],",
+            "    visibility = ['//visibility:public']",
+            ")");
   }
 
   @Override

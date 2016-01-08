@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@
 
 #include <sys/types.h>
 
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -65,8 +66,6 @@ int GetTerminalColumns();
 void AddJVMSpecificArguments(const string &host_javabase,
                              std::vector<string> *result);
 
-void ExecuteProgram(const string &exe, const std::vector<string> &args_vector);
-
 // If 'arg' matches 'key=value', returns address of 'value'.
 // If it matches 'key' alone, returns address of next_arg.
 // Returns NULL otherwise.
@@ -102,6 +101,16 @@ string GetJvmVersion(const string &java_exe);
 // version is the format [0-9]+(.[1-9]+)*.
 bool CheckJavaVersionIsAtLeast(const string &jvm_version,
                                const string &version_spec);
+
+// Converts a project identifier to string.
+// Workaround for mingw where std::to_string is not implemented.
+// See https://gcc.gnu.org/bugzilla/show_bug.cgi?id=52015.
+template <typename T>
+string ToString(const T& value) {
+  std::ostringstream oss;
+  oss << value;
+  return oss.str();
+}
 
 }  // namespace blaze
 

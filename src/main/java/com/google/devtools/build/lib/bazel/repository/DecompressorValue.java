@@ -1,4 +1,4 @@
-// Copyright 2015 Google Inc. All rights reserved.
+// Copyright 2015 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,16 +14,13 @@
 
 package com.google.devtools.build.lib.bazel.repository;
 
-import com.google.devtools.build.lib.bazel.rules.workspace.HttpArchiveRule;
-import com.google.devtools.build.lib.bazel.rules.workspace.HttpJarRule;
-import com.google.devtools.build.lib.bazel.rules.workspace.MavenJarRule;
-import com.google.devtools.build.lib.bazel.rules.workspace.NewHttpArchiveRule;
+import com.google.common.base.Preconditions;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.skyframe.SkyFunctionName;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 
 import java.io.IOException;
-import java.util.Objects;
 
 /**
  * The contents of decompressed archive.
@@ -32,9 +29,6 @@ public class DecompressorValue implements SkyValue {
 
   private final Path directory;
 
-  /**
-   * @param repositoryPath
-   */
   public DecompressorValue(Path repositoryPath) {
     directory = repositoryPath;
   }
@@ -49,7 +43,7 @@ public class DecompressorValue implements SkyValue {
       return true;
     }
 
-    if (other == null || !(other instanceof DecompressorValue)) {
+    if (!(other instanceof DecompressorValue)) {
       return false;
     }
 
@@ -61,102 +55,27 @@ public class DecompressorValue implements SkyValue {
     return directory.hashCode();
   }
 
-  public static SkyKey key(
-      String targetKind, String targetName, Path archivePath, Path repositoryPath)
-      throws IOException {
+  public static SkyKey key(SkyFunctionName skyFunctionName, DecompressorDescriptor descriptor) {
+    Preconditions.checkNotNull(descriptor.archivePath());
+    return new SkyKey(skyFunctionName, descriptor);
+  }
+
+  public static SkyKey key(DecompressorDescriptor descriptor) throws IOException {
+    Preconditions.checkNotNull(descriptor.archivePath());
+    return key(getSkyFunctionName(descriptor.archivePath()), descriptor);
+  }
+
+  private static SkyFunctionName getSkyFunctionName(Path archivePath) throws IOException {
     String baseName = archivePath.getBaseName();
-
-    if (targetKind.startsWith(HttpJarRule.NAME + " ")
-        || targetKind.equals(MavenJarRule.NAME)) {
-      if (baseName.endsWith(".jar")) {
-        return new SkyKey(JarFunction.NAME,
-            new DecompressorDescriptor(targetKind, targetName, archivePath, repositoryPath));
-      } else {
-        throw new IOException(
-            String.format("Expected %s %s to create file with a .jar suffix (got %s)",
-            targetKind, targetName, archivePath));
-      }
-    }
-
-    if (targetKind.startsWith(HttpArchiveRule.NAME + " ")
-        || targetKind.startsWith(NewHttpArchiveRule.NAME + " ")) {
-      if (baseName.endsWith(".zip") || baseName.endsWith(".jar")) {
-        return new SkyKey(ZipFunction.NAME,
-            new DecompressorDescriptor(targetKind, targetName, archivePath, repositoryPath));
-      } else {
-        throw new IOException(
-            String.format("Expected %s %s to create file with a .zip or .jar suffix (got %s)",
-            HttpArchiveRule.NAME, targetName, archivePath));
-      }
-    }
-
-    throw new IOException(String.format("No decompressor found for %s rule %s (got %s)",
-        targetKind, targetName, archivePath));
-  }
-
-  /**
-   * Description of an archive to be decompressed for use in a SkyKey.
-   * TODO(bazel-team): this should be an autovalue class.
-   */
-  public static class DecompressorDescriptor {
-    private final String targetKind;
-    private final String targetName;
-    private final Path archivePath;
-    private final Path repositoryPath;
-
-    public DecompressorDescriptor(String targetKind, String targetName, Path archivePath,
-        Path repositoryPath) {
-      this.targetKind = targetKind;
-      this.targetName = targetName;
-      this.archivePath = archivePath;
-      this.repositoryPath = repositoryPath;
-    }
-
-    public String targetKind() {
-      return targetKind;
-    }
-
-    public String targetName() {
-      return targetName;
-    }
-
-    public Path archivePath() {
-      return archivePath;
-    }
-
-    public Path repositoryPath() {
-      return repositoryPath;
-    }
-
-    @Override
-    public boolean equals(Object other) {
-      if (this == other) {
-        return true;
-      }
-
-      if (other == null || !(other instanceof DecompressorDescriptor)) {
-        return false;
-      }
-
-      DecompressorDescriptor descriptor = (DecompressorDescriptor) other;
-      return targetKind.equals(descriptor.targetKind)
-          && targetName.equals(descriptor.targetName)
-          && archivePath.equals(descriptor.archivePath)
-          && repositoryPath.equals(descriptor.repositoryPath);
-    }
-
-    @Override
-    public int hashCode() {
-      return Objects.hash(targetKind, targetName, archivePath, repositoryPath);
+    if (baseName.endsWith(".zip") || baseName.endsWith(".jar") || baseName.endsWith(".war")) {
+      return ZipFunction.NAME;
+    } else if (baseName.endsWith(".tar.gz") || baseName.endsWith(".tgz")) {
+      return TarGzFunction.NAME;
+    } else {
+      throw new IOException(String.format(
+          "Expected a file with a .zip, .jar, .war, .tar.gz, or .tgz suffix (got %s)",
+          archivePath));
     }
   }
 
-  /**
-   * Exceptions thrown when something goes wrong decompressing an archive.
-   */
-  static class DecompressorException extends Exception {
-    public DecompressorException(String message) {
-      super(message);
-    }
-  }
 }

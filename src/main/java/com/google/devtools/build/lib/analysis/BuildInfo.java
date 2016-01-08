@@ -1,4 +1,4 @@
-// Copyright 2015 Google Inc. All rights reserved.
+// Copyright 2015 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -38,4 +38,14 @@ public class BuildInfo {
    * Build time as milliseconds since epoch
    */
   public static final String BUILD_TIMESTAMP = "BUILD_TIMESTAMP";
+
+  /**
+   * The revision of source tree reported by source control system
+   */
+  public static final String BUILD_SCM_REVISION = "BUILD_SCM_REVISION";
+
+  /**
+   * The status of source tree reported by source control system
+   */
+  public static final String BUILD_SCM_STATUS = "BUILD_SCM_STATUS";
 }

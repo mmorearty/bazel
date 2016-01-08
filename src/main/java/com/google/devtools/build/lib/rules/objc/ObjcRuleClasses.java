@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,18 +16,19 @@ package com.google.devtools.build.lib.rules.objc;
 
 import static com.google.devtools.build.lib.packages.Attribute.ConfigurationTransition.HOST;
 import static com.google.devtools.build.lib.packages.Attribute.attr;
-import static com.google.devtools.build.lib.packages.Type.BOOLEAN;
-import static com.google.devtools.build.lib.packages.Type.LABEL;
-import static com.google.devtools.build.lib.packages.Type.LABEL_LIST;
-import static com.google.devtools.build.lib.packages.Type.STRING;
-import static com.google.devtools.build.lib.packages.Type.STRING_LIST;
+import static com.google.devtools.build.lib.packages.BuildType.LABEL;
+import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
+import static com.google.devtools.build.lib.syntax.Type.BOOLEAN;
+import static com.google.devtools.build.lib.syntax.Type.STRING;
+import static com.google.devtools.build.lib.syntax.Type.STRING_LIST;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.devtools.build.lib.Constants;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.analysis.BaseRuleClasses;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.analysis.RuleConfiguredTargetBuilder;
 import com.google.devtools.build.lib.analysis.RuleContext;
@@ -37,16 +38,20 @@ import com.google.devtools.build.lib.analysis.Runfiles;
 import com.google.devtools.build.lib.analysis.RunfilesProvider;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.packages.Attribute;
 import com.google.devtools.build.lib.packages.Attribute.LateBoundLabel;
 import com.google.devtools.build.lib.packages.AttributeMap;
+import com.google.devtools.build.lib.packages.BuildType;
 import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.packages.RuleClass;
 import com.google.devtools.build.lib.packages.RuleClass.Builder;
 import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
-import com.google.devtools.build.lib.packages.Type;
-import com.google.devtools.build.lib.syntax.Label;
+import com.google.devtools.build.lib.rules.apple.AppleConfiguration;
+import com.google.devtools.build.lib.rules.apple.DottedVersion;
+import com.google.devtools.build.lib.rules.apple.Platform;
+import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.FileTypeSet;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -55,38 +60,25 @@ import com.google.devtools.build.lib.vfs.PathFragment;
  * Shared rule classes and associated utility code for Objective-C rules.
  */
 public class ObjcRuleClasses {
+  static final String CLANG = "clang";
+  static final String CLANG_PLUSPLUS = "clang++";
+  static final String SWIFT = "swift";
+  static final String LIBTOOL = "libtool";
+  static final String DSYMUTIL = "dsymutil";
+  static final String LIPO = "lipo";
+  static final String STRIP = "strip";
 
-  // TODO(danielwh): Replace these with actual Artifact references
-  private static final String BIN_DIR =
-      IosSdkCommands.DEVELOPER_DIR + "/Toolchains/XcodeDefault.xctoolchain/usr/bin";
-  static final PathFragment CLANG = new PathFragment(BIN_DIR + "/clang");
-  static final PathFragment CLANG_PLUSPLUS = new PathFragment(BIN_DIR + "/clang++");
-  static final PathFragment LIBTOOL = new PathFragment(BIN_DIR + "/libtool");
-  static final PathFragment DSYMUTIL = new PathFragment(BIN_DIR + "/dsymutil");
-  static final PathFragment LIPO = new PathFragment(BIN_DIR + "/lipo");
-  static final PathFragment IBTOOL = new PathFragment(IosSdkCommands.IBTOOL_PATH);
   private static final PathFragment JAVA = new PathFragment("/usr/bin/java");
+
+  private static final DottedVersion MIN_LAUNCH_STORYBOARD_OS_VERSION =
+      DottedVersion.fromString("8.0");
 
   private ObjcRuleClasses() {
     throw new UnsupportedOperationException("static-only");
   }
 
-  /**
-   * Returns a derived Artifact by appending a String to a root-relative path. This is similar to
-   * {@link RuleContext#getRelatedArtifact(PathFragment, String)}, except the existing extension is
-   * not removed.
-   */
-  static Artifact artifactByAppendingToRootRelativePath(
-      RuleContext ruleContext, PathFragment path, String suffix) {
-    return ruleContext.getAnalysisEnvironment().getDerivedArtifact(
-        path.replaceName(path.getBaseName() + suffix),
-        ruleContext.getBinOrGenfilesDirectory());
-  }
-
-  static IntermediateArtifacts intermediateArtifacts(RuleContext ruleContext) {
-    return new IntermediateArtifacts(
-        ruleContext.getAnalysisEnvironment(), ruleContext.getBinOrGenfilesDirectory(),
-        ruleContext.getLabel(), /*archiveFileNameSuffix=*/"");
+  public static IntermediateArtifacts intermediateArtifacts(RuleContext ruleContext) {
+    return new IntermediateArtifacts(ruleContext, /*archiveFileNameSuffix=*/ "");
   }
 
   /**
@@ -99,9 +91,7 @@ public class ObjcRuleClasses {
     // the C/C++ archive file created by proto_library targets with attribute cc_api_version
     // specified.
     return new IntermediateArtifacts(
-        ruleContext.getAnalysisEnvironment(),
-        ruleContext.getConfiguration().getBinDirectory(),
-        ruleContext.getLabel(),
+        ruleContext,
         j2ObjcSource.getTargetLabel(),
         /*archiveFileNameSuffix=*/"_j2objc");
   }
@@ -119,7 +109,9 @@ public class ObjcRuleClasses {
 
     // TODO(bazel-team): Refactor the code to stop flattening the nested set here.
     for (J2ObjcSource j2ObjcSource : J2ObjcSrcsProvider.buildFrom(ruleContext).getSrcs()) {
-      j2objcLibraries.add(j2objcIntermediateArtifacts(ruleContext, j2ObjcSource).archive());
+      if (j2ObjcSource.hasSourceFiles()) {
+        j2objcLibraries.add(j2objcIntermediateArtifacts(ruleContext, j2ObjcSource).archive());
+      }
     }
 
     return j2objcLibraries.build();
@@ -145,13 +137,21 @@ public class ObjcRuleClasses {
   }
 
   public static Artifact artifactByAppendingToBaseName(RuleContext context, String suffix) {
-    return artifactByAppendingToRootRelativePath(
-        context, context.getLabel().toPathFragment(), suffix);
+    return context.getPackageRelativeArtifact(
+        context.getLabel().getName() + suffix, context.getBinOrGenfilesDirectory());
   }
 
   public static ObjcConfiguration objcConfiguration(RuleContext ruleContext) {
     return ruleContext.getFragment(ObjcConfiguration.class);
   }
+
+  /**
+   * Returns true if the source file can be instrumented for coverage.
+   */
+  public static boolean isInstrumentable(Artifact sourceArtifact) {
+    return !ASSEMBLY_SOURCES.matches(sourceArtifact.getFilename());
+  }
+
 
   @VisibleForTesting
   static final Iterable<SdkFramework> AUTOMATIC_SDK_FRAMEWORKS = ImmutableList.of(
@@ -160,8 +160,10 @@ public class ObjcRuleClasses {
   /**
    * Creates a new spawn action builder that requires a darwin architecture to run.
    */
-  static SpawnAction.Builder spawnOnDarwinActionBuilder() {
+  static SpawnAction.Builder spawnOnDarwinActionBuilder(RuleContext ruleContext) {
+    AppleConfiguration appleConfiguration = ruleContext.getFragment(AppleConfiguration.class);
     return new SpawnAction.Builder()
+        .setEnvironment(appleConfiguration.getEnvironmentForIosAction())
         .setExecutionInfo(ImmutableMap.of(ExecutionRequirements.REQUIRES_DARWIN, ""));
   }
 
@@ -171,11 +173,24 @@ public class ObjcRuleClasses {
    */
   // TODO(bazel-team): Reference a rule target rather than a jar file when Darwin runfiles work
   // better.
-  static SpawnAction.Builder spawnJavaOnDarwinActionBuilder(Artifact deployJarArtifact) {
-    return spawnOnDarwinActionBuilder()
+  static SpawnAction.Builder spawnJavaOnDarwinActionBuilder(RuleContext ruleContext,
+      Artifact deployJarArtifact) {
+    return spawnOnDarwinActionBuilder(ruleContext)
         .setExecutable(JAVA)
         .addExecutableArguments("-jar", deployJarArtifact.getExecPathString())
         .addInput(deployJarArtifact);
+  }
+
+  /**
+   * Creates a new spawn action builder that requires a darwin architecture to run and calls bash
+   * to execute cmd.
+   * Once we have a fix for b/21874752  we should be able to call setShellCommand(cmd)
+   * directly, but right now we don't have a buildhelpers package on Macs so we must specify
+   * the path to /bin/bash explicitly.
+   */
+  static SpawnAction.Builder spawnBashOnDarwinActionBuilder(RuleContext ruleContext, String cmd) {
+    return spawnOnDarwinActionBuilder(ruleContext)
+        .setShellCommand(ImmutableList.of("/bin/bash", "-c", cmd));
   }
 
   /**
@@ -188,12 +203,29 @@ public class ObjcRuleClasses {
   static RuleConfiguredTargetBuilder ruleConfiguredTarget(RuleContext ruleContext,
       NestedSet<Artifact> filesToBuild) {
     RunfilesProvider runfilesProvider = RunfilesProvider.withData(
-        new Runfiles.Builder().addRunfiles(ruleContext, RunfilesProvider.DEFAULT_RUNFILES).build(),
-        new Runfiles.Builder().addTransitiveArtifacts(filesToBuild).build());
+        new Runfiles.Builder(ruleContext.getWorkspaceName())
+            .addRunfiles(ruleContext, RunfilesProvider.DEFAULT_RUNFILES).build(),
+        new Runfiles.Builder(ruleContext.getWorkspaceName())
+            .addTransitiveArtifacts(filesToBuild).build());
 
     return new RuleConfiguredTargetBuilder(ruleContext)
         .setFilesToBuild(filesToBuild)
         .add(RunfilesProvider.class, runfilesProvider);
+  }
+
+  /**
+   * Returns {@code true} if the given rule context has a launch storyboard set and its
+   * configuration (--ios_minimum_os) supports launch storyboards.
+   */
+  static boolean useLaunchStoryboard(RuleContext ruleContext) {
+    if (!ruleContext.attributes().has("launch_storyboard", LABEL)) {
+      return false;
+    }
+    Artifact launchStoryboard =
+        ruleContext.getPrerequisiteArtifact("launch_storyboard", Mode.TARGET);
+    DottedVersion flagMinimumOs = objcConfiguration(ruleContext).getMinimumOs();
+    return launchStoryboard != null
+        && flagMinimumOs.compareTo(MIN_LAUNCH_STORYBOARD_OS_VERSION) >= 0;
   }
 
   /**
@@ -210,6 +242,10 @@ public class ObjcRuleClasses {
           <a href="#sh-tokenization">Bourne shell tokenization</a>.
           These flags will only apply to this target, and not those upon which
           it depends, or those which depend on it.
+          <p>
+          Note that for the generated Xcode project, directory paths specified using "-I" flags in
+          copts are parsed out, prepended with "$(WORKSPACE_ROOT)/" if they are relative paths, and
+          added to the header search paths for the associated Xcode target.
           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
           .add(attr("copts", STRING_LIST))
           .build();
@@ -312,17 +348,45 @@ public class ObjcRuleClasses {
    */
   static final FileType CPP_SOURCES = FileType.of(".cc", ".cpp", ".mm", ".cxx", ".C");
 
-  private static final FileType NON_CPP_SOURCES = FileType.of(".m", ".c");
+  static final FileType NON_CPP_SOURCES = FileType.of(".m", ".c");
 
-  static final FileTypeSet SRCS_TYPE = FileTypeSet.of(NON_CPP_SOURCES, CPP_SOURCES);
+  static final FileType ASSEMBLY_SOURCES = FileType.of(".s", ".S", ".asm");
+
+  static final FileType SWIFT_SOURCES = FileType.of(".swift");
+
+  /**
+   * Header files, which are not compiled directly, but may be included/imported from source files.
+   */
+  static final FileType HEADERS = FileType.of(".h", ".inc");
+
+  /**
+   * Files allowed in the srcs attribute. This includes private headers.
+   */
+  static final FileTypeSet SRCS_TYPE = FileTypeSet.of(NON_CPP_SOURCES, CPP_SOURCES,
+      ASSEMBLY_SOURCES, SWIFT_SOURCES, HEADERS);
+
+  /**
+   * Files that should actually be compiled.
+   */
+  static final FileTypeSet COMPILABLE_SRCS_TYPE = FileTypeSet.of(NON_CPP_SOURCES, CPP_SOURCES,
+      ASSEMBLY_SOURCES, SWIFT_SOURCES);
 
   static final FileTypeSet NON_ARC_SRCS_TYPE = FileTypeSet.of(FileType.of(".m", ".mm"));
 
   static final FileTypeSet PLIST_TYPE = FileTypeSet.of(FileType.of(".plist"));
 
-  static final FileTypeSet STORYBOARD_TYPE = FileTypeSet.of(FileType.of(".storyboard"));
+  static final FileType STORYBOARD_TYPE = FileType.of(".storyboard");
 
   static final FileType XIB_TYPE = FileType.of(".xib");
+
+  // TODO(bazel-team): Restrict this to actual header files only.
+  static final FileTypeSet HDRS_TYPE = FileTypeSet.ANY_FILE;
+
+  /**
+   * Coverage note files which contain information to reconstruct the basic block graphs and assign
+   * source line numbers to blocks.
+   */
+  static final FileType COVERAGE_NOTES = FileType.of(".gcno");
 
   /**
    * Common attributes for {@code objc_*} rules that allow the definition of resources such as
@@ -392,6 +456,10 @@ public class ObjcRuleClasses {
           the same structure passed to this argument, so
           <code>["res/foo.png"]</code> will end up in
           <code>Payload/foo.app/res/foo.png</code>.
+          <p>Note that in the generated XCode project file, all files in the top directory of
+          the specified files will be included in the Xcode-generated app bundle. So
+          specifying <code>["res/foo.png"]</code> will lead to the inclusion of all files in
+          directory <code>res</code>.
           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
           .add(attr("structured_resources", LABEL_LIST)
               .legacyAllowAnyFileType()
@@ -433,7 +501,7 @@ public class ObjcRuleClasses {
       return RuleDefinition.Metadata.builder()
           .name("$objc_resources_rule")
           .type(RuleClassType.ABSTRACT)
-          .ancestors(ResourceToolsRule.class)
+          .ancestors(ResourceToolsRule.class, XcrunRule.class)
           .build();
     }
   }
@@ -447,11 +515,15 @@ public class ObjcRuleClasses {
     public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
       return builder
           .add(attr("$plmerge", LABEL).cfg(HOST).exec()
-              .value(env.getLabel("//tools/objc:plmerge")))
-          .add(attr("$actoolzip_deploy", LABEL).cfg(HOST)
-              .value(env.getLabel("//tools/objc:actoolzip_deploy.jar")))
-          .add(attr("$ibtoolzip_deploy", LABEL).cfg(HOST)
-              .value(env.getLabel("//tools/objc:ibtoolzip_deploy.jar")))
+              .value(env.getLabel(Constants.TOOLS_REPOSITORY + "//tools/objc:plmerge")))
+          .add(attr("$actoolwrapper", LABEL).cfg(HOST).exec()
+              .value(env.getLabel(Constants.TOOLS_REPOSITORY + "//tools/objc:actoolwrapper")))
+          .add(attr("$ibtoolwrapper", LABEL).cfg(HOST).exec()
+              .value(env.getLabel(Constants.TOOLS_REPOSITORY + "//tools/objc:ibtoolwrapper")))
+          // TODO(dmaclach): Adding realpath here should not be required once
+          // https://github.com/bazelbuild/bazel/issues/285 is fixed.
+          .add(attr("$realpath", LABEL).cfg(HOST).exec()
+              .value(env.getLabel(Constants.TOOLS_REPOSITORY + "//tools/objc:realpath")))
           .build();
     }
     @Override
@@ -471,9 +543,9 @@ public class ObjcRuleClasses {
     public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
       return builder
           .add(attr("$xcodegen", LABEL).cfg(HOST).exec()
-              .value(env.getLabel("//tools/objc:xcodegen")))
+              .value(env.getLabel(Constants.TOOLS_REPOSITORY + "//tools/objc:xcodegen")))
           .add(attr("$dummy_source", LABEL)
-              .value(env.getLabel("//tools/objc:dummy.c")))
+              .value(env.getLabel(Constants.TOOLS_REPOSITORY + "//tools/objc:dummy.c")))
           .build();
     }
     @Override
@@ -494,13 +566,32 @@ public class ObjcRuleClasses {
     public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
       return builder
           /* <!-- #BLAZE_RULE($objc_compile_dependency_rule).ATTRIBUTE(hdrs) -->
-          The list of Objective-C files that are included as headers by source
-          files in this rule or by users of this library.
+          The list of C, C++, Objective-C, and Objective-C++ files that are
+          included as headers by source files in this rule or by users of this
+          library. These will be compiled separately from the source if modules
+          are enabled.
           ${SYNOPSIS}
           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
           .add(attr("hdrs", LABEL_LIST)
               .direct_compile_time_input()
-              .allowedFileTypes(FileTypeSet.ANY_FILE))
+              .allowedFileTypes(HDRS_TYPE))
+          /* <!-- #BLAZE_RULE($objc_compile_dependency_rule).ATTRIBUTE(textual_hdrs) -->
+          The list of C, C++, Objective-C, and Objective-C++ files that are
+          included as headers by source files in this rule or by users of this
+          library. Unlike hdrs, these will not be compiled separately from the
+          sources.
+          ${SYNOPSIS}
+          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
+          .add(attr("textual_hdrs", LABEL_LIST)
+              .direct_compile_time_input()
+              .allowedFileTypes(HDRS_TYPE))
+          /* <!-- #BLAZE_RULE($objc_compile_dependency_rule).ATTRIBUTE(bridging_header) -->
+          A header defining the Objective-C interfaces to be exposed in Swift.
+          ${SYNOPSIS}
+          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
+          .add(attr("bridging_header", BuildType.LABEL)
+              .direct_compile_time_input()
+              .allowedFileTypes(HDRS_TYPE))
           /* <!-- #BLAZE_RULE($objc_compile_dependency_rule).ATTRIBUTE(includes) -->
           List of <code>#include/#import</code> search paths to add to this target
           and all depending targets.
@@ -514,6 +605,11 @@ public class ObjcRuleClasses {
           genfiles and bin roots (e.g. <code>blaze-genfiles/pkg/includedir</code>
           and <code>blaze-out/pkg/includedir</code>) are included in addition to the
           actual client root.
+          <p>
+          Unlike <a href="#objc_library.copts">COPTS</a>, these flags are added for this rule
+          and every rule that depends on it. (Note: not the rules it depends upon!) Be
+          very careful, since this may have far-reaching effects.  When in doubt, add
+          "-I" flags to <a href="#objc_library.copts">COPTS</a> instead.
           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
           .add(attr("includes", Type.STRING_LIST))
           /* <!-- #BLAZE_RULE($objc_compile_dependency_rule).ATTRIBUTE(sdk_includes) -->
@@ -539,78 +635,90 @@ public class ObjcRuleClasses {
    * Common attributes for {@code objc_*} rules that contain compilable content.
    */
   public static class CompilingRule implements RuleDefinition {
-    private static final Iterable<String> ALLOWED_DEPS_RULE_CLASSES = ImmutableSet.of(
-        "objc_library",
-        "objc_import",
-        "objc_framework",
-        "objc_proto_library",
-        "j2objc_library",
-        "cc_library");
+    private static final Iterable<String> ALLOWED_DEPS_RULE_CLASSES =
+        ImmutableSet.of(
+            "objc_library",
+            "objc_import",
+            "objc_framework",
+            "objc_proto_library",
+            "j2objc_library",
+            "cc_library",
+            "cc_inc_library",
+            "ios_framework");
 
     @Override
     public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
       return builder
           /* <!-- #BLAZE_RULE($objc_compiling_rule).ATTRIBUTE(srcs) -->
-          The list of C, C++, Objective-C, and Objective-C++ files that are
-          processed to create the library target.
-          ${SYNOPSIS}
-          These are your checked-in source files, plus any generated files.
-          These are compiled into .o files with Clang, so headers should not go
-          here (see the hdrs attribute).
-          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
-          .add(attr("srcs", LABEL_LIST)
-              .direct_compile_time_input()
-              .allowedFileTypes(SRCS_TYPE))
+           The list of C, C++, Objective-C, and Objective-C++ source and header
+           files that are processed to create the library target.
+           ${SYNOPSIS}
+           These are your checked-in files, plus any generated files.
+           Source files are compiled into .o files with Clang. Header files
+           may be included/imported by any source or header in the srcs attribute
+           of this target, but not by headers in hdrs or any targets that depend
+           on this rule.
+           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
+          .add(attr("srcs", LABEL_LIST).direct_compile_time_input().allowedFileTypes(SRCS_TYPE))
           /* <!-- #BLAZE_RULE($objc_compiling_rule).ATTRIBUTE(non_arc_srcs) -->
-          The list of Objective-C files that are processed to create the
-          library target that DO NOT use ARC.
-          ${SYNOPSIS}
-          The files in this attribute are treated very similar to those in the
-          srcs attribute, but are compiled without ARC enabled.
-          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
-          .add(attr("non_arc_srcs", LABEL_LIST)
-              .direct_compile_time_input()
-              .allowedFileTypes(NON_ARC_SRCS_TYPE))
+           The list of Objective-C files that are processed to create the
+           library target that DO NOT use ARC.
+           ${SYNOPSIS}
+           The files in this attribute are treated very similar to those in the
+           srcs attribute, but are compiled without ARC enabled.
+           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
+          .add(
+              attr("non_arc_srcs", LABEL_LIST)
+                  .direct_compile_time_input()
+                  .allowedFileTypes(NON_ARC_SRCS_TYPE))
           /* <!-- #BLAZE_RULE($objc_compiling_rule).ATTRIBUTE(pch) -->
-          Header file to prepend to every source file being compiled (both arc
-          and non-arc).
-          ${SYNOPSIS}
-          Note that the file will not be precompiled - this is simply a
-          convenience, not a build-speed enhancement.
-          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
-          .add(attr("pch", LABEL)
-              .direct_compile_time_input()
-              .allowedFileTypes(FileType.of(".pch")))
+           Header file to prepend to every source file being compiled (both arc
+           and non-arc).
+           ${SYNOPSIS}
+           Note that the file will not be precompiled - this is simply a
+           convenience, not a build-speed enhancement.
+           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
+          .add(attr("pch", LABEL).direct_compile_time_input().allowedFileTypes(FileType.of(".pch")))
           /* <!-- #BLAZE_RULE($objc_compiling_rule).ATTRIBUTE(deps) -->
-          The list of targets that are linked together to form the final bundle.
-          ${SYNOPSIS}
-          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
-          .add(attr("deps", LABEL_LIST)
-              .direct_compile_time_input()
-              .allowedRuleClasses(ALLOWED_DEPS_RULE_CLASSES)
-              .allowedFileTypes())
+           The list of targets that are linked together to form the final bundle.
+           ${SYNOPSIS}
+           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
+          .override(
+              attr("deps", LABEL_LIST)
+                  .direct_compile_time_input()
+                  .allowedRuleClasses(ALLOWED_DEPS_RULE_CLASSES)
+                  .allowedFileTypes())
           /* <!-- #BLAZE_RULE($objc_compiling_rule).ATTRIBUTE(non_propagated_deps) -->
-          The list of targets that are required in order to build this target,
-          but which are not included in the final bundle.
-          ${SYNOPSIS}
-          This attribute should only rarely be used, and probably only for proto
-          dependencies.
-          ${SYNOPSIS}
-          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
-          .add(attr("non_propagated_deps", LABEL_LIST)
-              .direct_compile_time_input()
-              .allowedRuleClasses(ALLOWED_DEPS_RULE_CLASSES)
-              .allowedFileTypes())
+           The list of targets that are required in order to build this target,
+           but which are not included in the final bundle.
+           ${SYNOPSIS}
+           This attribute should only rarely be used, and probably only for proto
+           dependencies.
+           ${SYNOPSIS}
+           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
+          .add(
+              attr("non_propagated_deps", LABEL_LIST)
+                  .direct_compile_time_input()
+                  .allowedRuleClasses(ALLOWED_DEPS_RULE_CLASSES)
+                  .allowedFileTypes())
           /* <!-- #BLAZE_RULE($objc_compiling_rule).ATTRIBUTE(defines) -->
-          Extra <code>-D</code> flags to pass to the compiler. They should be in
-          the form <code>KEY=VALUE</code> or simply <code>KEY</code> and are
-          passed not only the compiler for this target (as <code>copts</code>
-          are) but also to all <code>objc_</code> dependers of this target.
-          ${SYNOPSIS}
-          Subject to <a href="#make_variables">"Make variable"</a> substitution and
-          <a href="#sh-tokenization">Bourne shell tokenization</a>.
-          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
+           Extra <code>-D</code> flags to pass to the compiler. They should be in
+           the form <code>KEY=VALUE</code> or simply <code>KEY</code> and are
+           passed not only the compiler for this target (as <code>copts</code>
+           are) but also to all <code>objc_</code> dependers of this target.
+           ${SYNOPSIS}
+           Subject to <a href="#make_variables">"Make variable"</a> substitution and
+           <a href="#sh-tokenization">Bourne shell tokenization</a>.
+           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
           .add(attr("defines", STRING_LIST))
+          /* <!-- #BLAZE_RULE($objc_compiling_rule).ATTRIBUTE(enable_modules) -->
+           Enables clang module support (via -fmodules).
+           ${SYNOPSIS}
+           Setting this to 1 will allow you to @import system headers and other targets:
+           @import UIKit;
+           @import path_to_package_target;
+           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
+          .add(attr("enable_modules", BOOLEAN))
           .build();
     }
     @Override
@@ -618,7 +726,12 @@ public class ObjcRuleClasses {
       return RuleDefinition.Metadata.builder()
           .name("$objc_compiling_rule")
           .type(RuleClassType.ABSTRACT)
-          .ancestors(CompileDependencyRule.class, OptionsRule.class, CoptsRule.class)
+          .ancestors(
+              BaseRuleClasses.RuleBase.class,
+              CompileDependencyRule.class,
+              OptionsRule.class,
+              CoptsRule.class,
+              XcrunRule.class)
           .build();
     }
   }
@@ -663,7 +776,7 @@ public class ObjcRuleClasses {
           .add(attr(":dumpsyms", LABEL)
           .cfg(HOST)
           .singleArtifact()
-          .value(new LateBoundLabel<BuildConfiguration>() {
+          .value(new LateBoundLabel<BuildConfiguration>(ObjcConfiguration.class) {
             @Override
             public Label getDefault(Rule rule, BuildConfiguration configuration) {
               if (!configuration.getFragment(ObjcConfiguration.class).generateDebugSymbols()) {
@@ -677,7 +790,8 @@ public class ObjcRuleClasses {
               .cfg(HOST)
               .exec()
               .singleArtifact()
-              .value(env.getLabel("//tools/objc:j2objc_dead_code_pruner")))
+              .value(env.getLabel(
+                  Constants.TOOLS_REPOSITORY + "//tools/objc:j2objc_dead_code_pruner")))
         .build();
     }
     @Override
@@ -690,52 +804,6 @@ public class ObjcRuleClasses {
     }
   }
 
-  /**
-   * Common attributes for rules that uses ObjC proto compiler.
-   */
-  public static class ObjcProtoRule implements RuleDefinition {
-    /**
-     * A Predicate that returns true if the ObjC proto compiler and its support deps are needed by
-     * the current rule.
-     *
-     * <p>For proto_library rules, this will return true if they have a j2objc_api_version
-     * attribute, and it is greater than 0. For other rules, this will return true by default.
-     */
-    public static final Predicate<AttributeMap> USE_PROTO_COMPILER = new Predicate<AttributeMap>() {
-      @Override
-      public boolean apply(AttributeMap rule) {
-        return rule.getAttributeDefinition("j2objc_api_version") == null
-            || rule.get("j2objc_api_version", Type.INTEGER) != 0;
-      }
-    };
-
-    public static final String COMPILE_PROTOS_ATTR = "$googlemac_proto_compiler";
-    public static final String PROTO_SUPPORT_ATTR = "$googlemac_proto_compiler_support";
-
-    @Override
-    public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
-      return builder
-          .add(attr(COMPILE_PROTOS_ATTR, LABEL)
-              .allowedFileTypes(FileType.of(".py"))
-              .cfg(HOST)
-              .singleArtifact()
-              .condition(USE_PROTO_COMPILER)
-              .value(env.getLabel("//tools/objc:compile_protos")))
-          .add(attr(PROTO_SUPPORT_ATTR, LABEL)
-              .legacyAllowAnyFileType()
-              .cfg(HOST)
-              .condition(USE_PROTO_COMPILER)
-              .value(env.getLabel("//tools/objc:proto_support")))
-          .build();
-    }
-    @Override
-    public Metadata getMetadata() {
-      return RuleDefinition.Metadata.builder()
-          .name("$objc_proto_rule")
-          .type(RuleClassType.ABSTRACT)
-          .build();
-    }
-  }
 
   /**
    * Base rule definition for iOS test rules.
@@ -745,44 +813,56 @@ public class ObjcRuleClasses {
     public RuleClass build(Builder builder, final RuleDefinitionEnvironment env) {
       return builder
           /* <!-- #BLAZE_RULE($ios_test_base_rule).ATTRIBUTE(target_device) -->
-          The device against which to run the test.
-          ${SYNOPSIS}
-          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
-          .add(attr(IosTest.TARGET_DEVICE, LABEL)
-              .allowedFileTypes()
-              .allowedRuleClasses("ios_device"))
+           The device against which to run the test.
+           ${SYNOPSIS}
+           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
+          .add(
+              attr(IosTest.TARGET_DEVICE, LABEL)
+                  .allowedFileTypes()
+                  .allowedRuleClasses("ios_device"))
           /* <!-- #BLAZE_RULE($ios_test_base_rule).ATTRIBUTE(xctest) -->
-          Whether this target contains tests using the XCTest testing framework.
-          ${SYNOPSIS}
-          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
-          .add(attr(IosTest.IS_XCTEST, BOOLEAN))
+           Whether this target contains tests using the XCTest testing framework.
+           ${SYNOPSIS}
+           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
+          .add(attr(IosTest.IS_XCTEST, BOOLEAN).value(true))
           /* <!-- #BLAZE_RULE($ios_test_base_rule).ATTRIBUTE(xctest_app) -->
-          A <code>objc_binary</code> target that contains the app bundle to test against in XCTest.
-          This attribute is only valid if <code>xctest</code> is true.
-          ${SYNOPSIS}
-          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
-          .add(attr(IosTest.XCTEST_APP, LABEL)
-              .value(new Attribute.ComputedDefault(IosTest.IS_XCTEST) {
-                @Override
-                public Object getDefault(AttributeMap rule) {
-                  return rule.get(IosTest.IS_XCTEST, Type.BOOLEAN)
-                      ? env.getLabel("//tools/objc:xctest_app")
-                      : null;
-                }
-              })
-              .allowedFileTypes()
-              // TODO(bazel-team): Remove objc_binary once it stops exporting XcTestAppProvider.
-              .allowedRuleClasses("objc_binary", "ios_application"))
-          .override(attr("infoplist", LABEL)
-              .value(new Attribute.ComputedDefault(IosTest.IS_XCTEST) {
-                @Override
-                public Object getDefault(AttributeMap rule) {
-                  return rule.get(IosTest.IS_XCTEST, Type.BOOLEAN)
-                      ? env.getLabel("//tools/objc:xctest_infoplist")
-                      : null;
-                }
-              })
-              .allowedFileTypes(PLIST_TYPE))
+           A <code>objc_binary</code> or <code>ios_application</code> target that contains the
+           app bundle to test against in XCTest.
+           This attribute is only valid if <code>xctest</code> is true.
+           ${SYNOPSIS}
+           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
+          .add(
+              attr(IosTest.XCTEST_APP, LABEL)
+                  .value(
+                      new Attribute.ComputedDefault(IosTest.IS_XCTEST) {
+                        @Override
+                        public Object getDefault(AttributeMap rule) {
+                          return rule.get(IosTest.IS_XCTEST, Type.BOOLEAN)
+                              // No TOOLS_REPOSITORY prefix for the xctest_app tool; xcode projects
+                              // referencing a dependency under a repository do not work. Thus,
+                              // this target must be available in the target depot.
+                              ? env.getLabel("//tools/objc:xctest_app")
+                              : null;
+                        }
+                      })
+                  .allowedFileTypes()
+                  // TODO(bazel-team): Remove objc_binary once it stops exporting XcTestAppProvider.
+                  .allowedRuleClasses("objc_binary", "ios_application"))
+          .override(
+              attr("infoplist", LABEL)
+                  .value(
+                      new Attribute.ComputedDefault(IosTest.IS_XCTEST) {
+                        @Override
+                        public Object getDefault(AttributeMap rule) {
+                          return rule.get(IosTest.IS_XCTEST, Type.BOOLEAN)
+                              // No TOOLS_REPOSITORY prefix for the xctest_app tool; xcode projects
+                              // referencing a dependency under a repository do not work. Thus,
+                              // this target must be available in the target depot.
+                              ? env.getLabel("//tools/objc:xctest_infoplist")
+                              : null;
+                        }
+                      })
+                  .allowedFileTypes(PLIST_TYPE))
           .build();
     }
     @Override
@@ -791,7 +871,11 @@ public class ObjcRuleClasses {
           .name("$ios_test_base_rule")
           .type(RuleClassType.ABSTRACT)
           .ancestors(
-              ReleaseBundlingRule.class, LinkingRule.class, XcodegenRule.class, SimulatorRule.class)
+              CompilingRule.class,
+              ReleaseBundlingRule.class,
+              LinkingRule.class,
+              XcodegenRule.class,
+              SimulatorRule.class)
           .build();
     }
   }
@@ -831,8 +915,11 @@ public class ObjcRuleClasses {
         <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
         .add(attr("families", STRING_LIST)
              .value(ImmutableList.of(TargetDeviceFamily.IPHONE.getNameInRule())))
-        .add(attr("$momczip_deploy", LABEL).cfg(HOST)
-            .value(env.getLabel("//tools/objc:momczip_deploy.jar")))
+        .add(attr("$momcwrapper", LABEL).cfg(HOST).exec()
+            .value(env.getLabel(Constants.TOOLS_REPOSITORY + "//tools/objc:momcwrapper")))
+        .add(attr("$swiftstdlibtoolwrapper", LABEL).cfg(HOST).exec()
+            .value(env.getLabel(
+                Constants.TOOLS_REPOSITORY + "//tools/objc:swiftstdlibtoolwrapper")))
         .build();
     }
     @Override
@@ -840,7 +927,7 @@ public class ObjcRuleClasses {
       return RuleDefinition.Metadata.builder()
           .name("$objc_bundling_rule")
           .type(RuleClassType.ABSTRACT)
-          .ancestors(OptionsRule.class, ResourceToolsRule.class)
+          .ancestors(OptionsRule.class, ResourceToolsRule.class, XcrunRule.class)
           .build();
     }
   }
@@ -874,26 +961,30 @@ public class ObjcRuleClasses {
 
           This is only used for non-simulator builds.
           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
-          .add(attr("provisioning_profile", LABEL)
-              .singleArtifact().allowedFileTypes(FileType.of(".mobileprovision")))
+          .add(
+              attr("provisioning_profile", LABEL)
+                  .singleArtifact()
+                  .allowedFileTypes(FileType.of(".mobileprovision")))
           // Will be used if provisioning_profile is null.
-          .add(attr(":default_provisioning_profile", LABEL)
-              .singleArtifact()
-              .allowedFileTypes(FileType.of(".mobileprovision"))
-              .value(new LateBoundLabel<BuildConfiguration>() {
-                @Override
-                public Label getDefault(Rule rule, BuildConfiguration configuration) {
-                  ObjcConfiguration objcConfiguration =
-                      configuration.getFragment(ObjcConfiguration.class);
-                  if (objcConfiguration.getBundlingPlatform() != Platform.DEVICE) {
-                    return null;
-                  }
-                  if (rule.isAttributeValueExplicitlySpecified("provisioning_profile")) {
-                    return null;
-                  }
-                  return objcConfiguration.getDefaultProvisioningProfileLabel();
-                }
-              }))
+          .add(
+              attr(":default_provisioning_profile", LABEL)
+                  .singleArtifact()
+                  .allowedFileTypes(FileType.of(".mobileprovision"))
+                  .value(
+                      new LateBoundLabel<BuildConfiguration>(ObjcConfiguration.class) {
+                        @Override
+                        public Label getDefault(Rule rule, BuildConfiguration configuration) {
+                          AppleConfiguration appleConfiguration =
+                              configuration.getFragment(AppleConfiguration.class);
+                          if (appleConfiguration.getBundlingPlatform() != Platform.IOS_DEVICE) {
+                            return null;
+                          }
+                          if (rule.isAttributeValueExplicitlySpecified("provisioning_profile")) {
+                            return null;
+                          }
+                          return appleConfiguration.getDefaultProvisioningProfileLabel();
+                        }
+                      }))
           /* <!-- #BLAZE_RULE($objc_release_bundling_rule).ATTRIBUTE(app_icon) -->
           The name of the application icon.
           ${SYNOPSIS}
@@ -917,8 +1008,36 @@ public class ObjcRuleClasses {
           If the launch image is not in an asset catalog, do not use this
           attribute. Instead, add an appropriately-named image resource to the
           bundle.
+          <p>
+          Note that this attribute will be ignored if both compiling with
+          <code>--ios_minimum_os</code> >= 8.0 and
+          <code>launch_storyboard</code> is also specified (whose value will be
+          used for the launch screen instead).
           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
           .add(attr("launch_image", STRING))
+          /* <!-- #BLAZE_RULE($objc_release_bundling_rule).ATTRIBUTE(launch_storyboard) -->
+          The location of the launch storyboard (.xib or .storyboard).
+          ${SYNOPSIS}
+
+          The provided storyboard will be compiled to the appropriate format
+          (.nib or .storyboardc respectively) and placed in the root of the
+          final package. If the storyboard's immediate containing directory is
+          named *.lproj (e.g. en.lproj, Base.lproj), it will be placed under a
+          directory of that name in the final bundle. This allows for
+          localizable UI.
+          <p>
+          The generated storyboard is registered in the final bundle's
+          <code>Info.plist</code> under the key
+          <code>UILaunchStoryboardName</code>.
+          <p>
+          Note that this attribute will be ignored if compiling with
+          <code>--ios_minimum_os</code> set to < 8.0 (generating a warning)
+          and that (if set) <code>launch_image</code> will be used instead.
+          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
+          .add(
+              attr("launch_storyboard", LABEL)
+                  .direct_compile_time_input()
+                  .allowedFileTypes(FileTypeSet.of(XIB_TYPE, STORYBOARD_TYPE)))
           /* <!-- #BLAZE_RULE($objc_release_bundling_rule).ATTRIBUTE(bundle_id) -->
           The bundle ID (reverse-DNS path followed by app name) of the binary.
           ${SYNOPSIS}
@@ -927,17 +1046,28 @@ public class ObjcRuleClasses {
           no bundle ID is specified on either this attribute or in the plist file, a junk value
           will be used.
           <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
-          .add(attr("bundle_id", STRING)
-              .value(new Attribute.ComputedDefault() {
-                @Override
-                public Object getDefault(AttributeMap rule) {
-                  // For tests and similar, we don't want to force people to explicitly specify
-                  // throw-away data.
-                  return "example." + rule.getName();
-                }
-              }))
-          .add(attr("$bundlemerge", LABEL).cfg(HOST).exec()
-              .value(env.getLabel("//tools/objc:bundlemerge")))
+          .add(
+              attr("bundle_id", STRING)
+                  .value(
+                      new Attribute.ComputedDefault() {
+                        @Override
+                        public Object getDefault(AttributeMap rule) {
+                          // For tests and similar, we don't want to force people to explicitly
+                          // specify throw-away data.
+                          return "example." + rule.getName();
+                        }
+                      }))
+          .add(
+              attr("$bundlemerge", LABEL)
+                  .cfg(HOST)
+                  .exec()
+                  .value(env.getLabel(Constants.TOOLS_REPOSITORY + "//tools/objc:bundlemerge")))
+          .add(
+              attr("$environment_plist_sh", LABEL)
+                  .cfg(HOST)
+                  .value(
+                      env.getLabel(
+                          Constants.TOOLS_REPOSITORY + "//tools/objc:environment_plist.sh")))
           .build();
     }
     @Override
@@ -960,12 +1090,34 @@ public class ObjcRuleClasses {
           // Needed to run the binary in the simulator.
           .add(attr("$iossim", LABEL).cfg(HOST).exec()
               .value(env.getLabel("//third_party/iossim:iossim")))
+          .add(attr("$std_redirect_dylib", LABEL).cfg(HOST).exec()
+              .value(env.getLabel(Constants.TOOLS_REPOSITORY + "//tools/objc:StdRedirect.dylib")))
           .build();
     }
     @Override
     public Metadata getMetadata() {
       return RuleDefinition.Metadata.builder()
           .name("$objc_simulator_rule")
+          .type(RuleClassType.ABSTRACT)
+          .build();
+    }
+  }
+
+  /**
+   * Common attributes for {@code objc_*} rules that need to call xcrun.
+   */
+  public static class XcrunRule implements RuleDefinition {
+    @Override
+    public RuleClass build(Builder builder, RuleDefinitionEnvironment env) {
+      return builder
+          .add(attr("$xcrunwrapper", LABEL).cfg(HOST).exec()
+              .value(env.getLabel(Constants.TOOLS_REPOSITORY + "//tools/objc:xcrunwrapper")))
+          .build();
+    }
+    @Override
+    public Metadata getMetadata() {
+      return RuleDefinition.Metadata.builder()
+          .name("$objc_xcrun_rule")
           .type(RuleClassType.ABSTRACT)
           .build();
     }

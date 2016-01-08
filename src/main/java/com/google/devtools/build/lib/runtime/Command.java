@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -75,12 +75,16 @@ public @interface Command {
   /**
    * Returns true if this command wants to write binary data to stdout.
    * Enabling this flag will disable ANSI escape stripping for this command.
+   * This should be used in conjunction with {@code Reporter#switchToAnsiAllowingHandler}.
+   * See {@link RunCommand} for example usage.
    */
   boolean binaryStdOut() default false;
 
   /**
    * Returns true if this command wants to write binary data to stderr.
    * Enabling this flag will disable ANSI escape stripping for this command.
+   * This should be used in conjunction with {@code Reporter#switchToAnsiAllowingHandler}.
+   * See {@link RunCommand} for example usage.
    */
   boolean binaryStdErr() default false;
 

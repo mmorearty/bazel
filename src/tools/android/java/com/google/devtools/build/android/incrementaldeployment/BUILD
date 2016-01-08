@@ -1,12 +1,19 @@
-filegroup(
-    name = "stub_application",
+package(default_visibility = ["//visibility:public"])
+
+android_library(
+    name = "incremental_stub_application",
     srcs = [
         "IncrementalClassLoader.java",
         "StubApplication.java",
     ],
 )
 
-filegroup(
-    name = "split_stub_application",
+android_library(
+    name = "incremental_split_stub_application",
     srcs = ["Placeholder.java"],
+)
+
+filegroup(
+    name = "srcs",
+    srcs = glob(["**"]),
 )

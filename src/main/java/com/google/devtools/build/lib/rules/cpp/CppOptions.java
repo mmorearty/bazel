@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,22 +13,22 @@
 // limitations under the License.
 package com.google.devtools.build.lib.rules.cpp;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
+import com.google.devtools.build.lib.Constants;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.analysis.config.BuildConfiguration.DefaultLabelConverter;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration.LabelConverter;
 import com.google.devtools.build.lib.analysis.config.CompilationMode;
 import com.google.devtools.build.lib.analysis.config.FragmentOptions;
 import com.google.devtools.build.lib.analysis.config.PerLabelOptions;
-import com.google.devtools.build.lib.rules.cpp.CppConfiguration.HeadersCheckingMode;
+import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.rules.cpp.CppConfiguration.LibcTop;
 import com.google.devtools.build.lib.rules.cpp.CppConfiguration.StripMode;
-import com.google.devtools.build.lib.syntax.Label;
-import com.google.devtools.build.lib.syntax.Label.SyntaxException;
 import com.google.devtools.build.lib.util.OptionsUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.view.config.crosstool.CrosstoolConfig.LipoMode;
@@ -42,19 +42,17 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Pattern;
-import java.util.regex.PatternSyntaxException;
 
 /**
  * Command-line options for C++.
  */
 public class CppOptions extends FragmentOptions {
-  /**
-   * Label of a filegroup that contains all crosstool files for all configurations.
-   */
-  @VisibleForTesting
-  public static final String DEFAULT_CROSSTOOL_TARGET = "//tools/cpp:toolchain";
-
+  /** Custom converter for {@code --crosstool_top}. */
+  public static class CrosstoolTopConverter extends DefaultLabelConverter {
+    public CrosstoolTopConverter() {
+      super(Constants.TOOLS_REPOSITORY + "//tools/cpp:toolchain");
+    }
+  }
 
   /**
    * Converter for --cwarn flag
@@ -136,7 +134,7 @@ public class CppOptions extends FragmentOptions {
       try {
         Label label = Label.parseAbsolute(input).getRelative(LIBC_RELATIVE_LABEL);
         return new LibcTop(label);
-      } catch (SyntaxException e) {
+      } catch (LabelSyntaxException e) {
         throw new OptionsParsingException(e.getMessage());
       }
     }
@@ -144,38 +142,6 @@ public class CppOptions extends FragmentOptions {
     @Override
     public String getTypeDescription() {
       return "a label";
-    }
-  }
-
-  /**
-   * Converter for the --hdrs_check option.
-   */
-  public static class HdrsCheckConverter extends EnumConverter<HeadersCheckingMode> {
-    public HdrsCheckConverter() {
-      super(HeadersCheckingMode.class, "Headers check mode");
-    }
-  }
-
-  /**
-   * Checks whether a string is a valid regex pattern and compiles it.
-   */
-  public static class NullableRegexPatternConverter implements Converter<Pattern> {
-
-    @Override
-    public Pattern convert(String input) throws OptionsParsingException {
-      if (input.isEmpty()) {
-        return null;
-      }
-      try {
-        return Pattern.compile(input);
-      } catch (PatternSyntaxException e) {
-        throw new OptionsParsingException("Not a valid regular expression: " + e.getMessage());
-      }
-    }
-
-    @Override
-    public String getTypeDescription() {
-      return "a valid Java regular expression";
     }
   }
 
@@ -195,9 +161,9 @@ public class CppOptions extends FragmentOptions {
   public boolean lipoCollector;
 
   @Option(name = "crosstool_top",
-          defaultValue = CppOptions.DEFAULT_CROSSTOOL_TARGET,
+          defaultValue = "",
           category = "version",
-          converter = LabelConverter.class,
+          converter = CrosstoolTopConverter.class,
           help = "The label of the crosstool package to be used for compiling C++ code.")
   public Label crosstoolTop;
 
@@ -217,8 +183,8 @@ public class CppOptions extends FragmentOptions {
   @Option(name = "thin_archives",
           defaultValue = "false",
           category = "strategy",  // but also adds edges to the action graph
-          help = "Pass the 'T' flag to ar if supported by the toolchain. " +
-                 "All supported toolchains support this setting.")
+          help = "Pass the 'T' flag to ar if supported by the toolchain. "
+                 + "All supported toolchains support this setting.")
   public boolean useThinArchives;
 
   // O intrepid reaper of unused options: Be warned that the [no]start_end_lib
@@ -292,16 +258,6 @@ public class CppOptions extends FragmentOptions {
             + "network and disk I/O load (and thus, continuous build cycle times) by a lot.  "
             + "NOTE: use of this flag REQUIRES --distinct_host_configuration.")
   public boolean skipStaticOutputs;
-
-  @Option(name = "hdrs_check",
-          allowMultiple = false,
-          defaultValue = "loose",
-          converter = HdrsCheckConverter.class,
-          category = "semantics",
-          help = "Headers check mode for rules that don't specify it explicitly using a "
-              + "hdrs_check attribute. Allowed values: 'loose' allows undeclared headers, 'warn' "
-              + "warns about undeclared headers, and 'strict' disallows them.")
-  public HeadersCheckingMode headersCheckingMode;
 
   @Option(name = "copt",
           allowMultiple = true,
@@ -378,7 +334,8 @@ public class CppOptions extends FragmentOptions {
           category = "flags",
           implicitRequirements = {"--copt=-Wno-error"},
           help = "Generate binaries with FDO instrumentation. Specify the relative " +
-                 "directory name for the .gcda files at runtime.")
+                 "directory name for the .gcda files at runtime. It also accepts " +
+                 "an LLVM profile output file path.")
   public PathFragment fdoInstrument;
 
   @Option(name = "fdo_optimize",
@@ -389,7 +346,7 @@ public class CppOptions extends FragmentOptions {
                  "an auto profile. This flag also accepts files specified as labels, for " +
                  "example //foo/bar:file.afdo. Such labels must refer to input files; you may " +
                  "need to add an exports_files directive to the corresponding package to make " +
-                 "the file visible to Blaze.")
+                 "the file visible to Blaze. It also accepts an indexed LLVM profile file.")
   public String fdoOptimize;
 
   @Option(name = "autofdo_lipo_data",

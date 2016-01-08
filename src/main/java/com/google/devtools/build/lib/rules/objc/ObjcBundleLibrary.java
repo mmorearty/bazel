@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,8 +23,8 @@ import com.google.devtools.build.lib.analysis.RuleConfiguredTarget.Mode;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.rules.RuleConfiguredTargetFactory;
+import com.google.devtools.build.lib.rules.apple.AppleConfiguration;
 import com.google.devtools.build.lib.rules.objc.ObjcCommon.ResourceAttributes;
-
 
 /**
  * Implementation for {@code objc_bundle_library}.
@@ -39,14 +39,22 @@ public class ObjcBundleLibrary implements RuleConfiguredTargetFactory {
     XcodeProvider.Builder xcodeProviderBuilder = new XcodeProvider.Builder();
     NestedSetBuilder<Artifact> filesToBuild = NestedSetBuilder.stableOrder();
 
-    new BundleSupport(ruleContext, bundling)
-        .registerActions(common.getObjcProvider())
-        .validateResources(common.getObjcProvider())
-        .addXcodeSettings(xcodeProviderBuilder);
-
     new ResourceSupport(ruleContext)
         .validateAttributes()
         .addXcodeSettings(xcodeProviderBuilder);
+
+    if (ruleContext.hasErrors()) {
+      return null;
+    }
+
+    new BundleSupport(ruleContext, bundling)
+        .registerActions(common.getObjcProvider())
+        .validate(common.getObjcProvider())
+        .addXcodeSettings(xcodeProviderBuilder);
+
+    if (ruleContext.hasErrors()) {
+      return null;
+    }
 
     new XcodeSupport(ruleContext)
         .addFilesToBuild(filesToBuild)
@@ -68,9 +76,10 @@ public class ObjcBundleLibrary implements RuleConfiguredTargetFactory {
     IntermediateArtifacts intermediateArtifacts =
         ObjcRuleClasses.intermediateArtifacts(ruleContext);
     ObjcConfiguration objcConfiguration = ObjcRuleClasses.objcConfiguration(ruleContext);
+    AppleConfiguration appleConfiguration = ruleContext.getFragment(AppleConfiguration.class);
     return new Bundling.Builder()
         .setName(ruleContext.getLabel().getName())
-        .setArchitecture(objcConfiguration.getIosCpu())
+        .setArchitecture(appleConfiguration.getIosCpu())
         .setBundleDirFormat("%s.bundle")
         .setObjcProvider(common.getObjcProvider())
         .addInfoplistInputFromRule(ruleContext)

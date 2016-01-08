@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,15 +17,16 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
 import com.google.devtools.build.lib.cmdline.ResolvedTargets;
 import com.google.devtools.build.lib.cmdline.ResolvedTargets.Builder;
 import com.google.devtools.build.lib.cmdline.TargetParsingException;
 import com.google.devtools.build.lib.cmdline.TargetPattern;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
+import com.google.devtools.build.lib.pkgcache.FilteringPolicies;
 import com.google.devtools.build.lib.pkgcache.FilteringPolicy;
-import com.google.devtools.build.lib.syntax.Label;
-import com.google.devtools.build.lib.syntax.Label.SyntaxException;
 import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 
@@ -68,7 +69,7 @@ public final class TargetPatternValue implements SkyValue {
   private Label labelFromString(String labelString) {
     try {
       return Label.parseAbsolute(labelString);
-    } catch (SyntaxException e) {
+    } catch (LabelSyntaxException e) {
       throw new IllegalStateException(e);
     }
   }
@@ -111,14 +112,9 @@ public final class TargetPatternValue implements SkyValue {
 
   /**
    * Returns an iterable of {@link TargetPatternSkyKeyOrException}, with {@link TargetPatternKey}
-   * arguments. If a provided pattern fails to parse, an element in the returned iterable will
-   * throw when its {@link TargetPatternSkyKeyOrException#getSkyKey} method is called and will
-   * return the failing pattern when its {@link
-   * TargetPatternSkyKeyOrException#getOriginalPattern} method is called.
-   *
-   * <p>There may be fewer returned elements than patterns provided as input. This function may
-   * combine patterns to return an iterable of SkyKeys that is equivalent but more efficient to
-   * evaluate.
+   * arguments, in the same order as the list of patterns provided as input. If a provided pattern
+   * fails to parse, the element in the returned iterable corresponding to it will throw when its
+   * {@link TargetPatternSkyKeyOrException#getSkyKey} method is called.
    *
    * @param patterns The list of patterns, eg "-foo/biz...". If a pattern's first character is "-",
    *     it is treated as a negative pattern.
@@ -129,24 +125,23 @@ public final class TargetPatternValue implements SkyValue {
   public static Iterable<TargetPatternSkyKeyOrException> keys(List<String> patterns,
       FilteringPolicy policy, String offset) {
     TargetPattern.Parser parser = new TargetPattern.Parser(offset);
-    AggregatedPatterns aggregatedPatterns = new AggregatedPatterns(policy, offset);
     ImmutableList.Builder<TargetPatternSkyKeyOrException> builder = ImmutableList.builder();
     for (String pattern : patterns) {
       boolean positive = !pattern.startsWith("-");
       String absoluteValueOfPattern = positive ? pattern : pattern.substring(1);
+      TargetPattern targetPattern;
       try {
-        aggregatedPatterns.addPattern(
-            new SignedPattern(positive, parser.parse(absoluteValueOfPattern)));
+        targetPattern = parser.parse(absoluteValueOfPattern);
       } catch (TargetParsingException e) {
         builder.add(new TargetPatternSkyKeyException(e, absoluteValueOfPattern));
+        continue;
       }
+      TargetPatternKey targetPatternKey = new TargetPatternKey(targetPattern,
+          positive ? policy : FilteringPolicies.NO_FILTER, /*isNegative=*/!positive, offset,
+          ImmutableSet.<String>of());
+      SkyKey skyKey = new SkyKey(SkyFunctions.TARGET_PATTERN, targetPatternKey);
+      builder.add(new TargetPatternSkyKeyValue(skyKey));
     }
-
-    for (TargetPatternKey patternKey : aggregatedPatterns.build()) {
-      builder.add(
-          new TargetPatternSkyKeyValue(new SkyKey(SkyFunctions.TARGET_PATTERN, patternKey)));
-    }
-
     return builder.build();
   }
 

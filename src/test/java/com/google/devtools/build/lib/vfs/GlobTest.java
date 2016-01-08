@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import com.google.common.base.Predicate;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Ordering;
-import com.google.devtools.build.lib.testutil.MoreAsserts;
+import com.google.common.util.concurrent.Uninterruptibles;
 import com.google.devtools.build.lib.testutil.TestUtils;
 import com.google.devtools.build.lib.vfs.inmemoryfs.InMemoryFileSystem;
 
@@ -31,13 +31,17 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
+import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -51,9 +55,18 @@ public class GlobTest {
 
   private Path tmpPath;
   private FileSystem fs;
+  private Path throwOnReaddir = null;
   @Before
   public void setUp() throws Exception {
-    fs = new InMemoryFileSystem();
+    fs = new InMemoryFileSystem() {
+      @Override
+      public Collection<Dirent> readdir(Path path, boolean followSymlinks) throws IOException {
+        if (path.equals(throwOnReaddir)) {
+          throw new FileNotFoundException(path.getPathString());
+        }
+        return super.readdir(path, followSymlinks);
+      }
+    };
     tmpPath = fs.getPath("/globtmp");
     for (String dir : ImmutableList.of("foo/bar/wiz",
                          "foo/barnacle/wiz",
@@ -214,11 +227,12 @@ public class GlobTest {
                                              Collection<String> excludes,
                                              String... expecteds)
       throws Exception {
-    MoreAsserts.assertSameContents(resolvePaths(expecteds),
-        new UnixGlob.Builder(tmpPath)
-            .addPatterns(pattern)
-            .addExcludes(excludes)
-            .globInterruptible());
+    assertThat(
+            new UnixGlob.Builder(tmpPath)
+                .addPatterns(pattern)
+                .addExcludes(excludes)
+                .globInterruptible())
+        .containsExactlyElementsIn(resolvePaths(expecteds));
   }
 
   private Set<Path> resolvePaths(String... relativePaths) {
@@ -246,11 +260,12 @@ public class GlobTest {
       }
     };
 
-    MoreAsserts.assertSameContents(ImmutableList.of(tmpPath.getRelative("foo/bar/wiz/file")),
-        new UnixGlob.Builder(tmpPath)
-            .addPattern("foo/bar/wiz/file")
-            .setFilesystemCalls(new AtomicReference<>(syscalls))
-            .glob());
+    assertThat(
+            new UnixGlob.Builder(tmpPath)
+                .addPattern("foo/bar/wiz/file")
+                .setFilesystemCalls(new AtomicReference<>(syscalls))
+                .glob())
+        .containsExactlyElementsIn(ImmutableList.of(tmpPath.getRelative("foo/bar/wiz/file")));
   }
 
   @Test
@@ -350,7 +365,7 @@ public class GlobTest {
           .globInterruptible();
       fail();
     } catch (IllegalArgumentException e) {
-      MoreAsserts.assertContainsRegex("in glob pattern", e.getMessage());
+      assertThat(e.getMessage()).containsMatch("in glob pattern");
     }
   }
 
@@ -365,29 +380,54 @@ public class GlobTest {
   }
 
   @Test
+  public void testIOException() throws Exception {
+    throwOnReaddir = fs.getPath("/throw_on_readdir");
+    throwOnReaddir.createDirectory();
+    try {
+      new UnixGlob.Builder(throwOnReaddir).addPattern("**").glob();
+      fail();
+    } catch (IOException e) {
+      // Expected.
+    }
+  }
+
+  @Test
   public void testCheckCanBeInterrupted() throws Exception {
     final Thread mainThread = Thread.currentThread();
     final ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(10);
 
-    Predicate<Path> interrupterPredicate = new Predicate<Path>() {
-      @Override
-      public boolean apply(Path input) {
-        mainThread.interrupt();
-        return true;
-      }
-    };
+    Predicate<Path> interrupterPredicate =
+        new Predicate<Path>() {
+          @Override
+          public boolean apply(Path input) {
+            mainThread.interrupt();
+            return true;
+          }
+        };
 
+    Future<?> globResult = null;
     try {
-      new UnixGlob.Builder(tmpPath)
-          .addPattern("**")
-          .setDirectoryFilter(interrupterPredicate)
-          .setThreadPool(executor)
-          .globInterruptible();
-      fail();  // Should have received InterruptedException
+      globResult =
+          new UnixGlob.Builder(tmpPath)
+              .addPattern("**")
+              .setDirectoryFilter(interrupterPredicate)
+              .setThreadPool(executor)
+              .globAsync(true);
+      globResult.get();
+      fail(); // Should have received InterruptedException
     } catch (InterruptedException e) {
       // good
     }
 
+    globResult.cancel(true);
+    try {
+      Uninterruptibles.getUninterruptibly(globResult);
+      fail();
+    } catch (CancellationException e) {
+      // Expected.
+    }
+
+    Thread.interrupted();
     assertFalse(executor.isShutdown());
     executor.shutdown();
     assertTrue(executor.awaitTermination(TestUtils.WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS));
@@ -416,9 +456,22 @@ public class GlobTest {
     // In the non-interruptible case, the interrupt bit should be set, but the
     // glob should return the correct set of full results.
     assertTrue(Thread.interrupted());
-    MoreAsserts.assertSameContents(resolvePaths(".", "foo", "foo/bar", "foo/bar/wiz",
-        "foo/bar/wiz/file", "foo/barnacle", "foo/barnacle/wiz", "food", "food/barnacle",
-        "food/barnacle/wiz", "fool", "fool/barnacle", "fool/barnacle/wiz"), result);
+    assertThat(result)
+        .containsExactlyElementsIn(
+            resolvePaths(
+                ".",
+                "foo",
+                "foo/bar",
+                "foo/bar/wiz",
+                "foo/bar/wiz/file",
+                "foo/barnacle",
+                "foo/barnacle/wiz",
+                "food",
+                "food/barnacle",
+                "food/barnacle/wiz",
+                "fool",
+                "fool/barnacle",
+                "fool/barnacle/wiz"));
 
     assertFalse(executor.isShutdown());
     executor.shutdown();

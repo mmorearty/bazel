@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Copyright 2015 Google Inc. All rights reserved.
+# Copyright 2015 The Bazel Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -149,7 +149,7 @@ EOF
   assert_test_ok //:trivial_test
 }
 
-# Regression test for https://github.com/google/bazel/issues/67
+# Regression test for https://github.com/bazelbuild/bazel/issues/67
 # C++ library depedending on C++ library fails to compile on Darwin
 function test_cpp_libdeps() {
   mkdir -p pkg
@@ -210,6 +210,30 @@ EOF
   ./bazel-bin/pkg/main >& $TEST_log \
     || fail "Failed to run //pkg:main"
   expect_log "Hello, World!"
+}
+
+
+function test_genrule_default_env() {
+  mkdir -p pkg
+  cat <<'EOF' >pkg/BUILD
+genrule(
+  name = "test",
+  outs = ["test.out"],
+  cmd = "(echo \"PATH=$$PATH\"; echo \"TMPDIR=$$TMPDIR\") > $@",
+)
+EOF
+  local old_path="${PATH-}"
+  local old_tmpdir="${TMPDIR-}"
+  export PATH=":/bin:/usr/bin:/random/path"
+  export TMPDIR="/some/path"
+  # batch mode to force reload of the environment
+  bazel --batch build //pkg:test || fail "Failed to build //pkg:test"
+  export PATH="$old_path"
+  export TMPDIR="$old_tmpdir"
+  assert_contains "PATH=:/bin:/usr/bin:/random/path" \
+    bazel-genfiles/pkg/test.out
+  assert_contains "TMPDIR=/some/path" \
+    bazel-genfiles/pkg/test.out
 }
 
 run_suite "rules test"

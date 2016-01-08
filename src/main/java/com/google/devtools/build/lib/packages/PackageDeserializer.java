@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2015 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,14 +11,26 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package com.google.devtools.build.lib.packages;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Predicate;
+import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableList.Builder;
 import com.google.common.collect.ImmutableMap;
-import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
+import com.google.common.collect.Interner;
+import com.google.common.collect.Interners;
+import com.google.common.collect.Sets;
+import com.google.common.hash.Hasher;
+import com.google.common.hash.Hashing;
+import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
+import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.events.Event;
+import com.google.devtools.build.lib.events.EventHandler;
 import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.events.NullEventHandler;
 import com.google.devtools.build.lib.events.StoredEventHandler;
@@ -26,27 +38,27 @@ import com.google.devtools.build.lib.packages.License.DistributionType;
 import com.google.devtools.build.lib.packages.License.LicenseParsingException;
 import com.google.devtools.build.lib.packages.Package.Builder.GeneratedLabelConflict;
 import com.google.devtools.build.lib.packages.Package.NameConflictException;
-import com.google.devtools.build.lib.packages.RuleClass.ParsedAttributeValue;
 import com.google.devtools.build.lib.query2.proto.proto2api.Build;
 import com.google.devtools.build.lib.query2.proto.proto2api.Build.StringDictUnaryEntry;
-import com.google.devtools.build.lib.syntax.FilesetEntry;
 import com.google.devtools.build.lib.syntax.GlobCriteria;
 import com.google.devtools.build.lib.syntax.GlobList;
-import com.google.devtools.build.lib.syntax.Label;
-import com.google.devtools.build.lib.syntax.Label.SyntaxException;
-import com.google.devtools.build.lib.vfs.FileSystem;
+import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
+import com.google.protobuf.CodedInputStream;
+import com.google.protobuf.ExtensionRegistryLite;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
+import javax.annotation.Nullable;
 
 /**
  * Functionality to deserialize loaded packages.
@@ -55,156 +67,209 @@ public class PackageDeserializer {
 
   private static final Logger LOG = Logger.getLogger(PackageDeserializer.class.getName());
 
-  // Workaround for Java serialization not allowing to pass in a context manually.
-  // volatile is needed to ensure that the objects are published safely.
-  // TODO(bazel-team): Subclass ObjectOutputStream to pass through environment variables.
-  public static volatile RuleClassProvider defaultRuleClassProvider;
-  public static volatile FileSystem defaultDeserializerFileSystem;
+  /**
+   * Provides the deserializer with tools it needs to build a package from its serialized form.
+   */
+  public interface PackageDeserializationEnvironment {
 
-  private class Context {
-    private final Package.Builder packageBuilder;
-    private final Path buildFilePath;
+    /** Converts the serialized package's path string into a {@link Path} object. */
+    Path getPath(String buildFilePath);
 
-    public Context(Path buildFilePath, Package.Builder packageBuilder) {
-      this.buildFilePath = buildFilePath;
-      this.packageBuilder = packageBuilder;
+    /** Returns a {@link RuleClass} object for the serialized rule. */
+    RuleClass getRuleClass(Build.Rule rulePb, Location ruleLocation);
+
+    /** Description of what rule attributes of each rule should be deserialized. */
+    AttributesToDeserialize attributesToDeserialize();
+  }
+
+  /**
+   * A class that defines what attributes to keep after deserialization. Note that all attributes of
+   * type label are kept in order to navigate between dependencies.
+   *
+   * <p>If {@code addSyntheticAttributeHash} is {@code true}, a synthetic attribute is added to each
+   * Rule that contains a stable hash of the entire serialized rule for the sake of permitting
+   * equality comparisons that respect the attributes that were dropped according to {@code
+   * attributesToKeep}.
+   */
+  public static class AttributesToDeserialize {
+
+    private final boolean addSyntheticAttributeHash;
+    private final Predicate<String> shouldKeepAttributeWithName;
+
+    public AttributesToDeserialize(boolean addSyntheticAttributeHash,
+        Predicate<String> shouldKeepAttributeWithName) {
+      this.addSyntheticAttributeHash = addSyntheticAttributeHash;
+      this.shouldKeepAttributeWithName = shouldKeepAttributeWithName;
     }
 
-    Location deserializeLocation(Build.Location location) {
-      return new ExplicitLocation(buildFilePath, location);
-    }
-
-    ParsedAttributeValue deserializeAttribute(Type<?> expectedType,
-        Build.Attribute attrPb)
-        throws PackageDeserializationException {
-      Object value = deserializeAttributeValue(expectedType, attrPb);
-      return new ParsedAttributeValue(
-          attrPb.hasExplicitlySpecified() && attrPb.getExplicitlySpecified(), value,
-          deserializeLocation(attrPb.getParseableLocation()));
-    }
-
-    void deserializeInputFile(Build.SourceFile sourceFile)
-        throws PackageDeserializationException {
-      InputFile inputFile;
-      try {
-        inputFile = packageBuilder.createInputFile(
-            deserializeLabel(sourceFile.getName()).getName(),
-            deserializeLocation(sourceFile.getParseableLocation()));
-      } catch (GeneratedLabelConflict e) {
-        throw new PackageDeserializationException(e);
-      }
-
-      if (!sourceFile.getVisibilityLabelList().isEmpty() || sourceFile.hasLicense()) {
-        packageBuilder.setVisibilityAndLicense(inputFile,
-            PackageFactory.getVisibility(deserializeLabels(sourceFile.getVisibilityLabelList())),
-            deserializeLicense(sourceFile.getLicense()));
-      }
-    }
-
-    void deserializePackageGroup(Build.PackageGroup packageGroupPb)
-        throws PackageDeserializationException {
-      List<String> specifications = new ArrayList<>();
-      for (String containedPackage : packageGroupPb.getContainedPackageList()) {
-        specifications.add("//" + containedPackage);
-      }
-
-      try {
-        packageBuilder.addPackageGroup(
-            deserializeLabel(packageGroupPb.getName()).getName(),
-            specifications,
-            deserializeLabels(packageGroupPb.getIncludedPackageGroupList()),
-            NullEventHandler.INSTANCE,  // TODO(bazel-team): Handle errors properly
-            deserializeLocation(packageGroupPb.getParseableLocation()));
-      } catch (Label.SyntaxException | Package.NameConflictException e) {
-        throw new PackageDeserializationException(e);
-      }
-    }
-
-    void deserializeRule(Build.Rule rulePb)
-        throws PackageDeserializationException {
-      String ruleClassName = rulePb.getRuleClass();
-      RuleClass ruleClass = ruleClassProvider.getRuleClassMap().get(ruleClassName);
-      if (ruleClass == null) {
-        throw new PackageDeserializationException(
-            String.format("Invalid rule class '%s'", ruleClassName));
-      }
-
-      Map<String, ParsedAttributeValue> attributeValues = new HashMap<>();
-      for (Build.Attribute attrPb : rulePb.getAttributeList()) {
-        Type<?> type = ruleClass.getAttributeByName(attrPb.getName()).getType();
-        attributeValues.put(attrPb.getName(), deserializeAttribute(type, attrPb));
-      }
-
-      Label ruleLabel = deserializeLabel(rulePb.getName());
-      Location ruleLocation = deserializeLocation(rulePb.getParseableLocation());
-      try {
-        Rule rule = ruleClass.createRuleWithParsedAttributeValues(
-            ruleLabel, packageBuilder, ruleLocation, attributeValues,
-            NullEventHandler.INSTANCE);
-        packageBuilder.addRule(rule);
-
-        Preconditions.checkState(!rule.containsErrors());
-      } catch (NameConflictException | SyntaxException e) {
-        throw new PackageDeserializationException(e);
-      }
+    public boolean includeAttribute(String attr) {
+      return shouldKeepAttributeWithName.apply(attr);
     }
   }
 
-  private final FileSystem fileSystem;
-  private final RuleClassProvider ruleClassProvider;
+  public static final AttributesToDeserialize DESERIALIZE_ALL_ATTRS =
+      new AttributesToDeserialize(false, Predicates.<String>alwaysTrue());
 
-  @Immutable
-  private static final class ExplicitLocation extends Location {
-    private final PathFragment path;
-    private final int startLine;
-    private final int startColumn;
-    private final int endLine;
-    private final int endColumn;
+  // Workaround for Java serialization making it tough to pass in a deserialization environment
+  // manually.
+  // volatile is needed to ensure that the objects are published safely.
+  // TODO(bazel-team): Subclass ObjectOutputStream to pass this through instead.
+  public static volatile PackageDeserializationEnvironment defaultPackageDeserializationEnvironment;
 
-    private ExplicitLocation(Path path, Build.Location location) {
-      super(
-          location.hasStartOffset() && location.hasEndOffset() ? location.getStartOffset() : 0,
-          location.hasStartOffset() && location.hasEndOffset() ? location.getEndOffset() : 0);
-      this.path = path.asFragment();
-      if (location.hasStartLine() && location.hasStartColumn()
-          && location.hasEndLine() && location.hasEndColumn()) {
-        this.startLine = location.getStartLine();
-        this.startColumn = location.getStartColumn();
-        this.endLine = location.getEndLine();
-        this.endColumn = location.getEndColumn();
-      } else {
-        this.startLine = 0;
-        this.startColumn = 0;
-        this.endLine = 0;
-        this.endColumn = 0;
+  // Cache label deserialization across all instances- PackgeDeserializers need to be created on
+  // demand due to initialiation constraints wrt the setting of static members.
+  private static final Interner<Label> LABEL_INTERNER = Interners.newWeakInterner();
+
+  /** Class encapsulating state for a single package deserialization. */
+  private static class DeserializationContext {
+    private final Package.Builder packageBuilder;
+
+    private DeserializationContext(Package.Builder packageBuilder) {
+      this.packageBuilder = packageBuilder;
+    }
+  }
+
+  private final PackageDeserializationEnvironment packageDeserializationEnvironment;
+
+  /**
+   * Creates a {@link PackageDeserializer} using {@link #defaultPackageDeserializationEnvironment}.
+   */
+  public PackageDeserializer() {
+    this.packageDeserializationEnvironment = defaultPackageDeserializationEnvironment;
+  }
+
+  public PackageDeserializer(PackageDeserializationEnvironment packageDeserializationEnvironment) {
+    this.packageDeserializationEnvironment =
+        Preconditions.checkNotNull(packageDeserializationEnvironment);
+  }
+
+  private static ParsedAttributeValue deserializeAttribute(
+      Type<?> expectedType, Build.Attribute attrPb) throws PackageDeserializationException {
+    Object value = deserializeAttributeValue(expectedType, attrPb);
+    return new ParsedAttributeValue(
+        attrPb.hasExplicitlySpecified() && attrPb.getExplicitlySpecified(), value
+    );
+  }
+
+  private static void deserializeInputFile(DeserializationContext context,
+      Build.SourceFile sourceFile)
+      throws PackageDeserializationException {
+    InputFile inputFile;
+    try {
+      inputFile = context.packageBuilder.createInputFile(
+          sourceFile.getName(), EmptyLocation.INSTANCE);
+    } catch (GeneratedLabelConflict e) {
+      throw new PackageDeserializationException(e);
+    }
+
+    if (!sourceFile.getVisibilityLabelList().isEmpty() || sourceFile.hasLicense()) {
+      context.packageBuilder.setVisibilityAndLicense(inputFile,
+          PackageFactory.getVisibility(deserializeLabels(sourceFile.getVisibilityLabelList())),
+          deserializeLicense(sourceFile.getLicense()));
+    }
+  }
+
+  private static void deserializePackageGroup(DeserializationContext context,
+      Build.PackageGroup packageGroupPb) throws PackageDeserializationException {
+    List<String> specifications = new ArrayList<>();
+    for (String containedPackage : packageGroupPb.getContainedPackageList()) {
+      specifications.add("//" + containedPackage);
+    }
+
+    try {
+      context.packageBuilder.addPackageGroup(
+          packageGroupPb.getName(),
+          specifications,
+          deserializeLabels(packageGroupPb.getIncludedPackageGroupList()),
+          NullEventHandler.INSTANCE,  // TODO(bazel-team): Handle errors properly
+          EmptyLocation.INSTANCE);
+    } catch (LabelSyntaxException | Package.NameConflictException e) {
+      throw new PackageDeserializationException(e);
+    }
+  }
+
+  private void deserializeRule(
+      PackageIdentifier packageId, DeserializationContext context, Build.Rule rulePb)
+          throws PackageDeserializationException, InterruptedException {
+    Location ruleLocation = EmptyLocation.INSTANCE;
+    RuleClass ruleClass = packageDeserializationEnvironment.getRuleClass(rulePb, ruleLocation);
+    Map<String, ParsedAttributeValue> attributeValues = new HashMap<>();
+    AttributesToDeserialize attrToDeserialize =
+        packageDeserializationEnvironment.attributesToDeserialize();
+
+    Hasher hasher = Hashing.md5().newHasher();
+    for (Build.Attribute attrPb : rulePb.getAttributeList()) {
+      Type<?> type = ruleClass.getAttributeByName(attrPb.getName()).getType();
+      attributeValues.put(attrPb.getName(), deserializeAttribute(type, attrPb));
+      if (attrToDeserialize.addSyntheticAttributeHash) {
+        // TODO(bazel-team): This might give false positives because of explicit vs implicit.
+        hasher.putBytes(attrPb.toByteArray());
       }
+    }
+    AttributeContainerWithoutLocation attributeContainer =
+        new AttributeContainerWithoutLocation(ruleClass, hasher.hash().asBytes());
+
+    try {
+      Label ruleLabel = LABEL_INTERNER.intern(Label.create(packageId, rulePb.getName()));
+      Rule rule = createRuleWithParsedAttributeValues(ruleClass,
+          ruleLabel, context.packageBuilder, ruleLocation, attributeValues,
+          NullEventHandler.INSTANCE, attributeContainer);
+      context.packageBuilder.addRule(rule);
+
+      // Remove the attribute after it is added to package in order to pass the validations
+      // and be able to compute all the outputs.
+      if (attrToDeserialize != DESERIALIZE_ALL_ATTRS) {
+        for (String attrName : attributeValues.keySet()) {
+          Attribute attribute = ruleClass.getAttributeByName(attrName);
+          if (!(attrToDeserialize.shouldKeepAttributeWithName.apply(attrName)
+              || BuildType.isLabelType(attribute.getType()))) {
+            attributeContainer.clearIfNotLabel(attrName);
+          }
+        }
+      }
+
+      Preconditions.checkState(!rule.containsErrors());
+    } catch (NameConflictException | LabelSyntaxException e) {
+      throw new PackageDeserializationException(e);
+    }
+
+  }
+
+  /** "Empty" location implementation, all methods should return non-null, but empty, values. */
+  private static class EmptyLocation extends Location {
+    private static final EmptyLocation INSTANCE = new EmptyLocation();
+
+    private static final PathFragment DEV_NULL = new PathFragment("/dev/null");
+    private static final LineAndColumn EMPTY_LINE_AND_COLUMN = new LineAndColumn(0, 0);
+
+    private EmptyLocation() {
+      super(0, 0);
     }
 
     @Override
     public PathFragment getPath() {
-      return path;
+      return DEV_NULL;
     }
 
     @Override
     public LineAndColumn getStartLineAndColumn() {
-      return new LineAndColumn(startLine, startColumn);
+      return EMPTY_LINE_AND_COLUMN;
     }
 
     @Override
     public LineAndColumn getEndLineAndColumn() {
-      return new LineAndColumn(endLine, endColumn);
+      return EMPTY_LINE_AND_COLUMN;
     }
-  }
 
-  public PackageDeserializer(FileSystem fileSystem, RuleClassProvider ruleClassProvider) {
-    if (fileSystem == null) {
-      fileSystem = defaultDeserializerFileSystem;
+    @Override
+    public int hashCode() {
+      return 42;
     }
-    this.fileSystem = Preconditions.checkNotNull(fileSystem);
-    if (ruleClassProvider == null) {
-      ruleClassProvider = defaultRuleClassProvider;
+
+    @Override
+    public boolean equals(Object other) {
+      return other instanceof EmptyLocation;
     }
-    this.ruleClassProvider = Preconditions.checkNotNull(ruleClassProvider);
   }
 
   /**
@@ -226,9 +291,10 @@ public class PackageDeserializer {
 
   private static Label deserializeLabel(String labelName) throws PackageDeserializationException {
     try {
-      return Label.parseAbsolute(labelName);
-    } catch (Label.SyntaxException e) {
-      throw new PackageDeserializationException("Invalid label: " + e.getMessage(), e);
+      return LABEL_INTERNER.intern(Label.parseAbsolute(labelName));
+    } catch (LabelSyntaxException e) {
+      throw new PackageDeserializationException(
+          "Invalid label '" + labelName + "':" + e.getMessage(), e);
     }
   }
 
@@ -305,14 +371,16 @@ public class PackageDeserializer {
 
   /**
    * Deserialize a package from its representation as a protocol message. The inverse of
-   * {@link PackageSerializer#serializePackage}.
+   * {@link PackageSerializer#serialize}.
    * @throws IOException
+   * @throws InterruptedException
    */
-  private void deserializeInternal(Build.Package packagePb, StoredEventHandler eventHandler,
-      Package.Builder builder, InputStream in) throws PackageDeserializationException, IOException {
-    Path buildFile = fileSystem.getPath(packagePb.getBuildFilePath());
+  private void deserializeInternal(PackageIdentifier packageId, Build.Package packagePb,
+      StoredEventHandler eventHandler, Package.Builder builder, CodedInputStream codedIn)
+          throws PackageDeserializationException, IOException, InterruptedException {
+    Path buildFile = packageDeserializationEnvironment.getPath(packagePb.getBuildFilePath());
     Preconditions.checkNotNull(buildFile);
-    Context context = new Context(buildFile, builder);
+    DeserializationContext context = new DeserializationContext(builder);
     builder.setFilename(buildFile);
 
     if (packagePb.hasDefaultVisibilitySet() && packagePb.getDefaultVisibilitySet()) {
@@ -361,33 +429,33 @@ public class PackageDeserializer {
     builder.setMakeEnv(makeEnvBuilder);
 
     for (Build.Event event : packagePb.getEventList()) {
-      deserializeEvent(context, eventHandler, event);
+      deserializeEvent(eventHandler, event);
     }
 
     if (packagePb.hasContainsErrors() && packagePb.getContainsErrors()) {
       builder.setContainsErrors();
     }
-    if (packagePb.hasContainsTemporaryErrors() && packagePb.getContainsTemporaryErrors()) {
-      builder.setContainsTemporaryErrors();
-    }
 
-    deserializeTargets(in, context);
+    builder.setWorkspaceName(packagePb.getWorkspaceName());
+
+    deserializeTargets(packageId, codedIn, context);
   }
 
-  private static void deserializeTargets(InputStream in, Context context) throws IOException,
-      PackageDeserializationException {
+  private void deserializeTargets(
+      PackageIdentifier packageId, CodedInputStream codedIn, DeserializationContext context)
+          throws IOException, PackageDeserializationException, InterruptedException {
     Build.TargetOrTerminator tot;
-    while (!(tot = Build.TargetOrTerminator.parseDelimitedFrom(in)).getIsTerminator()) {
+    while (!(tot = readTargetOrTerminator(codedIn)).getIsTerminator()) {
       Build.Target target = tot.getTarget();
       switch (target.getType()) {
         case SOURCE_FILE:
-          context.deserializeInputFile(target.getSourceFile());
+          deserializeInputFile(context, target.getSourceFile());
           break;
         case PACKAGE_GROUP:
-          context.deserializePackageGroup(target.getPackageGroup());
+          deserializePackageGroup(context, target.getPackageGroup());
           break;
         case RULE:
-          context.deserializeRule(target.getRule());
+          deserializeRule(packageId, context, target.getRule());
           break;
         default:
           throw new IllegalStateException("Unexpected Target type: " + target.getType());
@@ -395,61 +463,72 @@ public class PackageDeserializer {
     }
   }
 
+  private static Build.TargetOrTerminator readTargetOrTerminator(CodedInputStream codedIn)
+      throws IOException {
+    Build.TargetOrTerminator.Builder builder = Build.TargetOrTerminator.newBuilder();
+    codedIn.readMessage(builder, ExtensionRegistryLite.getEmptyRegistry());
+    return builder.build();
+  }
+
   /**
    * Deserializes a {@link Package} from {@code in}. The inverse of
-   * {@link PackageSerializer#serializePackage}.
+   * {@link PackageSerializer#serialize}.
    *
-   * <p>Expects {@code in} to contain a single
+   * <p>Expects {@code codedIn} to contain a single
    * {@link com.google.devtools.build.lib.query2.proto.proto2api.Build.Package} message followed
    * by a series of
    * {@link com.google.devtools.build.lib.query2.proto.proto2api.Build.TargetOrTerminator}
    * messages encoding the associated targets.
    *
-   * @param in stream to read from
+   * @param codedIn stream to read from
    * @return a new {@link Package} as read from {@code in}
    * @throws PackageDeserializationException on failures deserializing the input
    * @throws IOException on failures reading from {@code in}
+   * @throws InterruptedException
    */
-  public Package deserialize(InputStream in) throws PackageDeserializationException, IOException {
+  public Package deserialize(CodedInputStream codedIn)
+      throws PackageDeserializationException, IOException, InterruptedException {
     try {
-      return deserializeInternal(in);
+      return deserializeInternal(codedIn);
     } catch (PackageDeserializationException | RuntimeException e) {
       LOG.log(Level.WARNING, "Failed to deserialize Package object", e);
       throw e;
     }
   }
 
-  private Package deserializeInternal(InputStream in)
-      throws PackageDeserializationException, IOException {
+  private Package deserializeInternal(CodedInputStream codedIn)
+      throws PackageDeserializationException, IOException, InterruptedException {
     // Read the initial Package message so we have the data to initialize the builder. We will read
     // the Targets in individually later.
-    Build.Package packagePb = Build.Package.parseDelimitedFrom(in);
-    Package.Builder builder;
+    Build.Package packagePb = readPackageProto(codedIn);
+    PackageIdentifier packageId;
     try {
-      builder = new Package.Builder(
-          new PackageIdentifier(packagePb.getRepository(), new PathFragment(packagePb.getName())));
-    } catch (SyntaxException e) {
+      packageId = PackageIdentifier.create(
+          packagePb.getRepository(), new PathFragment(packagePb.getName()));
+    } catch (LabelSyntaxException e) {
       throw new PackageDeserializationException(e);
     }
+
+    Package.Builder builder = new Package.Builder(packageId, null);
     StoredEventHandler eventHandler = new StoredEventHandler();
-    deserializeInternal(packagePb, eventHandler, builder, in);
+    deserializeInternal(packageId, packagePb, eventHandler, builder, codedIn);
     builder.addEvents(eventHandler.getEvents());
     return builder.build();
   }
 
-  private static void deserializeEvent(
-      Context context, StoredEventHandler eventHandler, Build.Event event) {
-    Location location = null;
-    if (event.hasLocation()) {
-      location = context.deserializeLocation(event.getLocation());
-    }
+  private static Build.Package readPackageProto(CodedInputStream codedIn) throws IOException {
+    Build.Package.Builder builder = Build.Package.newBuilder();
+    codedIn.readMessage(builder, ExtensionRegistryLite.getEmptyRegistry());
+    return builder.build();
+  }
 
+  private static void deserializeEvent(StoredEventHandler eventHandler, Build.Event event) {
     String message = event.getMessage();
     switch (event.getKind()) {
-      case ERROR: eventHandler.handle(Event.error(location, message)); break;
-      case WARNING: eventHandler.handle(Event.warn(location, message)); break;
-      case INFO: eventHandler.handle(Event.info(location, message)); break;
-      case PROGRESS: eventHandler.handle(Event.progress(location, message)); break;
+      case ERROR: eventHandler.handle(Event.error(message)); break;
+      case WARNING: eventHandler.handle(Event.warn(message)); break;
+      case INFO: eventHandler.handle(Event.info(message)); break;
+      case PROGRESS: eventHandler.handle(Event.progress(message)); break;
       default: break;  // Ignore
     }
   }
@@ -478,17 +557,18 @@ public class PackageDeserializer {
   }
 
   // TODO(bazel-team): Verify that these put sane values in the attribute
-  private static Object deserializeAttributeValue(Type<?> expectedType,
+  @VisibleForTesting
+  static Object deserializeAttributeValue(Type<?> expectedType,
       Build.Attribute attrPb)
       throws PackageDeserializationException {
     switch (attrPb.getType()) {
       case INTEGER:
-        return attrPb.hasIntValue() ? new Integer(attrPb.getIntValue()) : null;
+        return attrPb.hasIntValue() ? attrPb.getIntValue() : null;
 
       case STRING:
         if (!attrPb.hasStringValue()) {
           return null;
-        } else if (expectedType == Type.NODEP_LABEL) {
+        } else if (expectedType == BuildType.NODEP_LABEL) {
           return deserializeLabel(attrPb.getStringValue());
         } else {
           return attrPb.getStringValue();
@@ -499,7 +579,7 @@ public class PackageDeserializer {
         return attrPb.hasStringValue() ? deserializeLabel(attrPb.getStringValue()) : null;
 
       case STRING_LIST:
-        if (expectedType == Type.NODEP_LABEL_LIST) {
+        if (expectedType == BuildType.NODEP_LABEL_LIST) {
           return deserializeGlobs(deserializeLabels(attrPb.getStringListValueList()), attrPb);
         } else {
           return deserializeGlobs(ImmutableList.copyOf(attrPb.getStringListValueList()), attrPb);
@@ -516,17 +596,35 @@ public class PackageDeserializer {
         return attrPb.hasLicense() ? deserializeLicense(attrPb.getLicense()) : null;
 
       case STRING_DICT: {
+        // Building an immutable map will fail if the builder was given duplicate keys. These entry
+        // lists may contain duplicate keys if the serialized map value was configured (e.g. via
+        // the select function) and the different configuration values had keys in common. This is
+        // because serialization flattens configurable map-valued attributes.
+        //
+        // As long as serialization does this flattening, to avoid failure during deserialization,
+        // we dedupe entries in the list by their keys.
+        // TODO(bazel-team): Serialize and deserialize configured values with fidelity (without
+        // flattening them).
         ImmutableMap.Builder<String, String> builder = ImmutableMap.builder();
+        HashSet<String> keysSeenSoFar = Sets.newHashSet();
         for (Build.StringDictEntry entry : attrPb.getStringDictValueList()) {
-          builder.put(entry.getKey(), entry.getValue());
+          String key = entry.getKey();
+          if (keysSeenSoFar.add(key)) {
+            builder.put(key, entry.getValue());
+          }
         }
         return builder.build();
       }
 
       case STRING_DICT_UNARY: {
+        // See STRING_DICT case's comment about why this dedupes entries by their keys.
         ImmutableMap.Builder<String, String> builder = ImmutableMap.builder();
+        HashSet<String> keysSeenSoFar = Sets.newHashSet();
         for (StringDictUnaryEntry entry : attrPb.getStringDictUnaryValueList()) {
-          builder.put(entry.getKey(), entry.getValue());
+          String key = entry.getKey();
+          if (keysSeenSoFar.add(key)) {
+            builder.put(key, entry.getValue());
+          }
         }
         return builder.build();
       }
@@ -535,17 +633,27 @@ public class PackageDeserializer {
         return deserializeFilesetEntries(attrPb.getFilesetListValueList());
 
       case LABEL_LIST_DICT: {
+        // See STRING_DICT case's comment about why this dedupes entries by their keys.
         ImmutableMap.Builder<String, List<Label>> builder = ImmutableMap.builder();
+        HashSet<String> keysSeenSoFar = Sets.newHashSet();
         for (Build.LabelListDictEntry entry : attrPb.getLabelListDictValueList()) {
-          builder.put(entry.getKey(), deserializeLabels(entry.getValueList()));
+          String key = entry.getKey();
+          if (keysSeenSoFar.add(key)) {
+            builder.put(key, deserializeLabels(entry.getValueList()));
+          }
         }
         return builder.build();
       }
 
       case STRING_LIST_DICT: {
+        // See STRING_DICT case's comment about why this dedupes entries by their keys.
         ImmutableMap.Builder<String, List<String>> builder = ImmutableMap.builder();
+        HashSet<String> keysSeenSoFar = Sets.newHashSet();
         for (Build.StringListDictEntry entry : attrPb.getStringListDictValueList()) {
-          builder.put(entry.getKey(), ImmutableList.copyOf(entry.getValueList()));
+          String key = entry.getKey();
+          if (keysSeenSoFar.add(key)) {
+            builder.put(key, ImmutableList.copyOf(entry.getValueList()));
+          }
         }
         return builder.build();
       }
@@ -555,6 +663,9 @@ public class PackageDeserializer {
 
       case TRISTATE:
         return attrPb.hasStringValue() ? deserializeTriStateValue(attrPb.getStringValue()) : null;
+
+      case INTEGER_LIST:
+        return ImmutableList.copyOf(attrPb.getIntListValueList());
 
       default:
           throw new PackageDeserializationException("Invalid discriminator: " + attrPb.getType());
@@ -570,6 +681,96 @@ public class PackageDeserializer {
         return FilesetEntry.SymlinkBehavior.DEREFERENCE;
       default:
         throw new IllegalStateException();
+    }
+  }
+
+  /**
+   * An special {@code AttributeContainer} implementation that does not keep
+   * the location and can contain a hashcode of the target attributes.
+   */
+  public static class AttributeContainerWithoutLocation extends AttributeContainer {
+
+    @Nullable
+    private final byte[] syntheticAttrHash;
+
+    private AttributeContainerWithoutLocation(RuleClass ruleClass,
+        @Nullable byte[] syntheticAttrHash) {
+      super(ruleClass, null);
+      this.syntheticAttrHash = syntheticAttrHash;
+    }
+
+    @Override
+    public Location getAttributeLocation(String attrName) {
+      return EmptyLocation.INSTANCE;
+    }
+
+    @Override
+    void setAttributeLocation(int attrIndex, Location location) {
+      throw new UnsupportedOperationException("Setting location not supported");
+    }
+
+    @Override
+    void setAttributeLocation(Attribute attribute, Location location) {
+      throw new UnsupportedOperationException("Setting location not supported");
+    }
+
+    @Nullable
+    public byte[] getSyntheticAttrHash() {
+      return syntheticAttrHash;
+    }
+
+    private void clearIfNotLabel(String attr) {
+      setAttributeValueByName(attr, null);
+    }
+  }
+
+  /**
+   * Creates a rule with the attribute values that are already parsed.
+   *
+   * <p><b>WARNING:</b> This assumes that the attribute values here have the right type and
+   * bypasses some sanity checks. If they are of the wrong type, everything will come down burning.
+   */
+  @SuppressWarnings("unchecked")
+  private static Rule createRuleWithParsedAttributeValues(RuleClass ruleClass, Label label,
+      Package.Builder pkgBuilder, Location ruleLocation,
+      Map<String, ParsedAttributeValue> attributeValues, EventHandler eventHandler,
+      AttributeContainer attributeContainer)
+      throws LabelSyntaxException, InterruptedException {
+    Rule rule = pkgBuilder.newRuleWithLabelAndAttrContainer(label, ruleClass, ruleLocation,
+        attributeContainer);
+    rule.checkValidityPredicate(eventHandler);
+
+    for (Attribute attribute : rule.getRuleClassObject().getAttributes()) {
+      ParsedAttributeValue value = attributeValues.get(attribute.getName());
+      if (attribute.isMandatory()) {
+        Preconditions.checkState(value != null);
+      }
+
+      if (value == null) {
+        continue;
+      }
+
+      rule.setAttributeValue(attribute, value.value, value.explicitlySpecified);
+      ruleClass.checkAllowedValues(rule, attribute, eventHandler);
+
+      if (attribute.getName().equals("visibility")) {
+        // TODO(bazel-team): Verify that this cast works
+        rule.setVisibility(PackageFactory.getVisibility((List<Label>) value.value));
+      }
+    }
+
+    rule.populateOutputFiles(eventHandler, pkgBuilder);
+    Preconditions.checkState(!rule.containsErrors());
+    return rule;
+  }
+
+  private static class ParsedAttributeValue {
+    private final boolean explicitlySpecified;
+    private final Object value;
+
+    private ParsedAttributeValue(boolean explicitlySpecified, Object value) {
+      this.explicitlySpecified = explicitlySpecified;
+      this.value = value;
     }
   }
 }

@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@ import com.google.devtools.build.lib.analysis.buildinfo.BuildInfoFactory.BuildIn
 import com.google.devtools.build.lib.packages.RuleVisibility;
 import com.google.devtools.build.lib.pkgcache.PathPackageLocator;
 import com.google.devtools.build.lib.skyframe.SkyframeActionExecutor.ConflictException;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.skyframe.Injectable;
 import com.google.devtools.build.skyframe.SkyFunction;
 import com.google.devtools.build.skyframe.SkyKey;
@@ -43,12 +44,12 @@ import javax.annotation.Nullable;
  * "precomputed" from skyframe's perspective and so the graph needs to be prepopulated with them
  * (e.g. via injection).
  */
-public class PrecomputedValue implements SkyValue {
+public final class PrecomputedValue implements SkyValue {
   /**
    * An externally-injected precomputed value. Exists so that modules can inject precomputed values
    * into Skyframe's graph.
    *
-   * <p>{@see com.google.devtools.build.lib.blaze.BlazeModule#getPrecomputedValues}.
+   * @see com.google.devtools.build.lib.runtime.BlazeModule#getPrecomputedSkyframeValues
    */
   public static final class Injected {
     private final Precomputed<?> precomputed;
@@ -72,10 +73,14 @@ public class PrecomputedValue implements SkyValue {
     return new Injected(precomputed, Suppliers.ofInstance(value));
   }
 
-  static final Precomputed<String> DEFAULTS_PACKAGE_CONTENTS =
+  public static final Precomputed<String> DEFAULTS_PACKAGE_CONTENTS =
       new Precomputed<>(new SkyKey(SkyFunctions.PRECOMPUTED, "default_pkg"));
 
-  static final Precomputed<RuleVisibility> DEFAULT_VISIBILITY =
+  public static final Precomputed<PathFragment> BLACKLISTED_PACKAGE_PREFIXES_FILE =
+          new Precomputed<>(
+              new SkyKey(SkyFunctions.PRECOMPUTED, "blacklisted_package_prefixes_file"));
+
+  public static final Precomputed<RuleVisibility> DEFAULT_VISIBILITY =
       new Precomputed<>(new SkyKey(SkyFunctions.PRECOMPUTED, "default_visibility"));
 
   static final Precomputed<UUID> BUILD_ID =
@@ -173,7 +178,7 @@ public class PrecomputedValue implements SkyValue {
     /**
      * Injects a new variable value.
      */
-    void set(Injectable injectable, T value) {
+    public void set(Injectable injectable, T value) {
       injectable.inject(ImmutableMap.of(key, new PrecomputedValue(value)));
     }
   }

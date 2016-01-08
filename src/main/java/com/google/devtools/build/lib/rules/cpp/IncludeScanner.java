@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import com.google.devtools.build.lib.actions.ActionExecutionContext;
-import com.google.devtools.build.lib.actions.ActionExecutionException;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.EnvironmentalExecException;
 import com.google.devtools.build.lib.actions.ExecException;
@@ -44,9 +43,9 @@ import java.util.Set;
 public interface IncludeScanner {
   /**
    * Processes source files and a list of includes extracted from command line flags. Adds all found
-   * files to the provided set {@param includes}.
+   * files to the provided set {@code includes}.
    *
-   * <p>The resulting set will include {@param mainSource} and {@param sources}. This has no real
+   * <p>The resulting set will include {@code mainSource} and {@code sources}. This has no real
    * impact in the case that we are scanning a single source file, since it is already known to be
    * an input. However, this is necessary when we have more than one source to scan from, for
    * example when building C++ modules. In that case we have one of two possibilities:
@@ -63,11 +62,12 @@ public interface IncludeScanner {
    *     add the entry points to the inputs here.</li></ol>
    * </p>
    * 
-   * <p>{@param mainSource} is the source file relative to which the {@param cmdlineIncludes} are
+   * <p>{@code mainSource} is the source file relative to which the {@code cmdlineIncludes} are
    * interpreted.</p>
    */
   void process(Artifact mainSource, Collection<Artifact> sources,
-      Map<Artifact, Artifact> legalOutputPaths, List<String> cmdlineIncludes,
+      Map<Artifact, Artifact> legalOutputPaths, List<PathFragment> includeDirs,
+      List<PathFragment> quoteIncludeDirs, List<String> cmdlineIncludes,
       Set<Artifact> includes, ActionExecutionContext actionExecutionContext)
       throws IOException, ExecException, InterruptedException;
 
@@ -101,7 +101,7 @@ public interface IncludeScanner {
         IncludeScannerSupplier includeScannerSupplier,
         ActionExecutionContext actionExecutionContext,
         String profilerTaskName)
-        throws ExecException, InterruptedException, ActionExecutionException {
+        throws ExecException, InterruptedException {
 
       Set<Artifact> includes = Sets.newConcurrentHashSet();
 
@@ -145,8 +145,8 @@ public interface IncludeScanner {
 
           Artifact mainSource =  scannable.getMainIncludeScannerSource();
           Collection<Artifact> sources = scannable.getIncludeScannerSources();
-          scanner.process(mainSource, sources, legalOutputPaths, cmdlineIncludes, includes,
-                actionExecutionContext);
+          scanner.process(mainSource, sources, legalOutputPaths, quoteIncludeDirs,
+              includeDirList, cmdlineIncludes, includes, actionExecutionContext);
         }
       } catch (IOException e) {
         throw new EnvironmentalExecException(e.getMessage());

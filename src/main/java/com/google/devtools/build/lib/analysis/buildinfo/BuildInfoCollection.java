@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,7 +29,8 @@ public final class BuildInfoCollection {
 
   public BuildInfoCollection(List<? extends Action> actions, List<Artifact> stampedBuildInfo,
       List<Artifact> redactedBuildInfo) {
-    this.actions = ImmutableList.copyOf(actions);
+    // Do not remove <Action>: workaround for Java 7 type inference.
+    this.actions = ImmutableList.<Action>copyOf(actions);
     this.stampedBuildInfo = ImmutableList.copyOf(stampedBuildInfo);
     this.redactedBuildInfo = ImmutableList.copyOf(redactedBuildInfo);
   }

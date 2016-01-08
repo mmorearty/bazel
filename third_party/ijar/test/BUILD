@@ -6,7 +6,7 @@ exports_files(["LICENSE"])
 
 sh_test(
     name = "ijar_test",
-    size = "large",
+    size = "enormous",
     srcs = ["ijar_test.sh"],
     args = [
         "$(JAVAC)",
@@ -29,6 +29,8 @@ sh_test(
         "WellCompressed1.java",
         "WellCompressed2.java",
         ":libtypeannotations2.jar",
+        ":libmethodparameters.jar",
+        ":source_debug_extension.jar",
         "TypeAnnotationTest2.java",
         # invokedynamic/ClassWithLambda.java, compiled with javac8
         ":libinvokedynamic.jar",
@@ -39,6 +41,7 @@ sh_test(
         "//tools/jdk:langtools",
     ],
     shard_count = 5,
+    tags = ["zip"],
 )
 
 sh_test(
@@ -56,6 +59,7 @@ sh_test(
         "//src/test/shell:bashunit",
         "//third_party/ijar:zipper",
     ],
+    tags = ["zip"],
 )
 
 java_library(
@@ -63,6 +67,7 @@ java_library(
     testonly = 1,
     srcs = ["invokedynamic/ClassWithLambda.java"],
     javacopts = ["-source 8 -target 8"],
+    tags = ["jdk8"],
 )
 
 # For testing purposes: a class which exposes a private nested class in
@@ -94,6 +99,28 @@ java_library(
     name = "typeannotations2",
     srcs = glob(["typeannotations2/**/*.java"]),
     javacopts = ["-source 8 -target 8"],
+    tags = ["jdk8"],
+)
+
+java_library(
+    name = "methodparameters",
+    srcs = ["methodparameters/Test.java"],
+    javacopts = ["-source 8 -target 8 -parameters"],
+)
+
+java_binary(
+    name = "gen_source_debug_extension",
+    srcs = ["GenSourceDebugExtension.java"],
+    main_class = "test.GenSourceDebugExtension",
+    deps = ["//third_party:asm"],
+)
+
+genrule(
+    name = "gen_source_debug_extension_jar",
+    srcs = [],
+    outs = ["source_debug_extension.jar"],
+    cmd = "$(location :gen_source_debug_extension) $@",
+    tools = ["gen_source_debug_extension"],
 )
 
 java_test(
@@ -111,6 +138,7 @@ java_test(
         "package-info.java",
         ":interface_ijar_testlib",
     ],
+    tags = ["zip"],
     deps = [
         "//src/java_tools/buildjar:BazelJavaCompiler",
         "//third_party:asm",

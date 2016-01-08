@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2015 Google Inc. All rights reserved.
+# Copyright 2015 The Bazel Authors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,29 +25,31 @@ function query() {
 }
 
 # Compile bazel
-([ -f "output/bazel" ] && [ -f "tools/jdk/JavaBuilder_deploy.jar" ] && [ -f "tools/jdk/ijar" ] \
-    && [ -f "tools/jdk/SingleJar_deploy.jar" ] && [ -e "tools/jdk/jdk" ]) || ./compile.sh >&2 || exit $?
+[ -f "output/bazel" ] || ./compile.sh tools,compile >&2 || exit $?
+([ -f "tools/jdk/JavaBuilder_deploy.jar" ] \
+  && [ -f "tools/jdk/ijar" ] \
+  && [ -f "tools/jdk/SingleJar_deploy.jar" ] \
+  && [ -f "tools/jdk/GenClass_deploy.jar" ]) \
+  || ./compile.sh tools,init output/bazel >&2 \
+  || exit $?
 
-# Build everything
-./output/bazel build //src/... //third_party/... >&2 || exit $?
-
-# Path IDE should put its output files in.
-IDE_OUTPUT_PATH="bazel-out/ide-classes"
+# Build almost everything.
+# //third_party/ijar/test/... is disabled due to #273.
+# xcode and android tools do not work out of the box.
+./output/bazel build -- //src/{main,java_tools,test/{java,cpp}}/... //third_party/... \
+  -//third_party/ijar/test/... -//third_party/java/j2objc/... >&2 \
+  || exit $?
 
 # Source roots.
 JAVA_PATHS="$(find src -name "*.java" | sed "s|/com/google/.*$||" | sort -u)"
 if [ "$(uname -s | tr 'A-Z' 'a-z')" != "darwin" ]; then
   JAVA_PATHS="$(echo "${JAVA_PATHS}" | fgrep -v "/objc_tools/")"
 fi
-# Android doesn't work out of the box, but should we tell users to install the
-# Android SDK?
-JAVA_PATHS="$(echo "${JAVA_PATHS}" | fgrep -v "/android/")"
 
 THIRD_PARTY_JAR_PATHS="$(find third_party -name "*.jar" | sort -u)"
 
-# Generated protobuf files have special jar files and output into .proto_output
-# directories.
-PROTOBUF_PATHS="$(find bazel-bin/ -name "*.java" | grep proto | sed "s|/com/google/.*$||" | sort -u | sed 's|//|/|')"
+# Android-SDK-dependent files may need to be excluded from compilation.
+ANDROID_IMPORTING_FILES="$(grep "^import android\." -R -l --include "*.java" src | sort)"
 
 # All other generated libraries.
 readonly package_list=$(find src -name "BUILD" | sed "s|/BUILD||" | sed "s|^|//|")
@@ -87,6 +89,12 @@ function collect_generated_paths() {
   for path in $(find bazel-genfiles/ -name "*.java" | sed 's|/\{0,1\}bazel-genfiles/\{1,2\}|//|' | uniq); do
     source_path=$(echo ${path} | sed 's|//|bazel-genfiles/|' | sed 's|/com/.*$||')
     echo "$(get_containing_library ${path}):${source_path}"
+  done &&
+  # Add in "external" jars which don't have source paths.
+  for jardir in "jar/" ""; do
+    for path in $(find bazel-genfiles/${jardir}_ijar -name "*.jar" | sed 's|^/+||' | uniq); do
+      echo "${path}:"
+    done
   done | sort -u
 }
 

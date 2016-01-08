@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ import com.google.common.base.Preconditions;
 import com.google.devtools.build.lib.analysis.buildinfo.BuildInfoCollection;
 import com.google.devtools.build.lib.analysis.buildinfo.BuildInfoFactory;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
-import com.google.devtools.build.lib.syntax.Label;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.skyframe.SkyFunctionName;
 
 import java.util.Objects;
@@ -38,10 +38,9 @@ public class BuildInfoCollectionValue extends ActionLookupValue {
     return collection;
   }
 
-  @SuppressWarnings("deprecation")
   @Override
   public String toString() {
-    return com.google.common.base.Objects.toStringHelper(getClass())
+    return com.google.common.base.MoreObjects.toStringHelper(getClass())
         .add("collection", collection)
         .add("generatingActionMap", generatingActionMap).toString();
   }

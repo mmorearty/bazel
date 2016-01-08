@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.syntax;
 import com.google.common.collect.Iterables;
 
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * The value passed to a select({...}) statement, e.g.:
@@ -30,11 +31,15 @@ import java.util.Map;
  * </pre>
  */
 public final class SelectorValue {
+  // TODO(bazel-team): Selectors are currently split between .packages and .syntax . They should
+  // really all be in .packages, but then we'd need to figure out a way how to extend binary
+  // operators, which is a non-trivial problem.
   private final Map<?, ?> dictionary;
   private final Class<?> type;
 
   public SelectorValue(Map<?, ?> dictionary) {
-    this.dictionary = dictionary;
+    // Put the dict through a sorting to avoid depending on insertion order.
+    this.dictionary = new TreeMap<>(dictionary);
     this.type = dictionary.isEmpty() ? null : Iterables.get(dictionary.values(), 0).getClass();
   }
 

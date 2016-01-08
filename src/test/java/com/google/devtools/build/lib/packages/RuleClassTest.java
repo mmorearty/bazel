@@ -1,4 +1,4 @@
-// Copyright 2006-2015 Google Inc. All rights reserved.
+// Copyright 2015 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,14 +16,15 @@ package com.google.devtools.build.lib.packages;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 import static com.google.devtools.build.lib.packages.Attribute.attr;
+import static com.google.devtools.build.lib.packages.BuildType.LABEL;
+import static com.google.devtools.build.lib.packages.BuildType.LABEL_LIST;
+import static com.google.devtools.build.lib.packages.BuildType.OUTPUT_LIST;
 import static com.google.devtools.build.lib.packages.ImplicitOutputsFunction.substitutePlaceholderIntoTemplate;
-import static com.google.devtools.build.lib.packages.Type.BOOLEAN;
-import static com.google.devtools.build.lib.packages.Type.INTEGER;
-import static com.google.devtools.build.lib.packages.Type.LABEL;
-import static com.google.devtools.build.lib.packages.Type.LABEL_LIST;
-import static com.google.devtools.build.lib.packages.Type.OUTPUT_LIST;
-import static com.google.devtools.build.lib.packages.Type.STRING;
-import static com.google.devtools.build.lib.packages.Type.STRING_LIST;
+import static com.google.devtools.build.lib.packages.RuleClass.NO_EXTERNAL_BINDINGS;
+import static com.google.devtools.build.lib.syntax.Type.BOOLEAN;
+import static com.google.devtools.build.lib.syntax.Type.INTEGER;
+import static com.google.devtools.build.lib.syntax.Type.STRING;
+import static com.google.devtools.build.lib.syntax.Type.STRING_LIST;
 
 import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
@@ -33,17 +34,20 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+import com.google.devtools.build.lib.cmdline.Label;
+import com.google.devtools.build.lib.cmdline.LabelSyntaxException;
+import com.google.devtools.build.lib.cmdline.PackageIdentifier;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.EventCollector;
 import com.google.devtools.build.lib.events.EventKind;
 import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.events.Location.LineAndColumn;
 import com.google.devtools.build.lib.packages.Attribute.ValidityPredicate;
+import com.google.devtools.build.lib.packages.ConfigurationFragmentPolicy.MissingFragmentPolicy;
 import com.google.devtools.build.lib.packages.Package.Builder;
 import com.google.devtools.build.lib.packages.RuleClass.Builder.RuleClassType;
 import com.google.devtools.build.lib.packages.util.PackageLoadingTestCase;
-import com.google.devtools.build.lib.syntax.Label;
-import com.google.devtools.build.lib.syntax.Label.SyntaxException;
+import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.vfs.Path;
 
 import java.util.ArrayList;
@@ -70,25 +74,18 @@ public class RuleClassTest extends PackageLoadingTestCase {
   };
 
   private static final class DummyFragment extends BuildConfiguration.Fragment {
-    @Override
-    public String getName() {
-      return "dummy-for-testing";
-    }
 
-    @Override
-    public String cacheKey() {
-      return "some cache key";
-    }
   }
 
   private static final Predicate<String> PREFERRED_DEPENDENCY_PREDICATE = Predicates.alwaysFalse();
 
-  private static RuleClass createRuleClassA() throws Label.SyntaxException {
+  private static RuleClass createRuleClassA() throws LabelSyntaxException {
     return new RuleClass("ruleA", false, false, false, false, false, false,
         ImplicitOutputsFunction.NONE, RuleClass.NO_CHANGE,
         DUMMY_CONFIGURED_TARGET_FACTORY, PredicatesWithMessage.<Rule>alwaysTrue(),
-        PREFERRED_DEPENDENCY_PREDICATE, ImmutableSet.<Class<?>>of(), null, null,
-        ImmutableSet.<Class<?>>of(), false, true,
+        PREFERRED_DEPENDENCY_PREDICATE, ImmutableSet.<Class<?>>of(), null,
+        NO_EXTERNAL_BINDINGS, null, ImmutableSet.<Class<?>>of(),
+        MissingFragmentPolicy.FAIL_ANALYSIS, true,
         attr("my-string-attr", STRING).mandatory().build(),
         attr("my-label-attr", LABEL).mandatory().legacyAllowAnyFileType()
             .value(Label.parseAbsolute("//default:label")).build(),
@@ -106,8 +103,8 @@ public class RuleClassTest extends PackageLoadingTestCase {
     return new RuleClass("ruleB", false, false, false, false, false, false,
         ImplicitOutputsFunction.NONE, RuleClass.NO_CHANGE, DUMMY_CONFIGURED_TARGET_FACTORY,
         PredicatesWithMessage.<Rule>alwaysTrue(), PREFERRED_DEPENDENCY_PREDICATE,
-        ImmutableSet.<Class<?>>of(), null, null, ImmutableSet.<Class<?>>of(), false, true,
-        attributes.toArray(new Attribute[0]));
+        ImmutableSet.<Class<?>>of(), null, NO_EXTERNAL_BINDINGS, null, ImmutableSet.<Class<?>>of(),
+        MissingFragmentPolicy.FAIL_ANALYSIS, true, attributes.toArray(new Attribute[0]));
   }
 
   public void testRuleClassBasics() throws Exception {
@@ -209,7 +206,7 @@ public class RuleClassTest extends PackageLoadingTestCase {
   }
 
   private Package.Builder createDummyPackageBuilder() {
-    return new Builder(PackageIdentifier.createInDefaultRepo(TEST_PACKAGE_NAME))
+    return new Builder(PackageIdentifier.createInDefaultRepo(TEST_PACKAGE_NAME), "TESTING")
         .setFilename(testBuildfilePath)
         .setMakeEnv(new MakeEnvironment.Builder());
   }
@@ -218,7 +215,8 @@ public class RuleClassTest extends PackageLoadingTestCase {
     RuleClass depsRuleClass = new RuleClass("ruleDeps", false, false, false, false, false, false,
         ImplicitOutputsFunction.NONE, RuleClass.NO_CHANGE, DUMMY_CONFIGURED_TARGET_FACTORY,
         PredicatesWithMessage.<Rule>alwaysTrue(), PREFERRED_DEPENDENCY_PREDICATE,
-        ImmutableSet.<Class<?>>of(), null, null, ImmutableSet.<Class<?>>of(), false, true,
+        ImmutableSet.<Class<?>>of(), null, NO_EXTERNAL_BINDINGS, null, ImmutableSet.<Class<?>>of(),
+        MissingFragmentPolicy.FAIL_ANALYSIS, true,
         attr("list1", LABEL_LIST).mandatory().legacyAllowAnyFileType().build(),
         attr("list2", LABEL_LIST).mandatory().legacyAllowAnyFileType().build(),
         attr("list3", LABEL_LIST).mandatory().legacyAllowAnyFileType().build());
@@ -247,7 +245,8 @@ public class RuleClassTest extends PackageLoadingTestCase {
     RuleClass ruleClass = new RuleClass("ruleVis", false, false, false, false, false, false,
         ImplicitOutputsFunction.NONE, RuleClass.NO_CHANGE, DUMMY_CONFIGURED_TARGET_FACTORY,
         PredicatesWithMessage.<Rule>alwaysTrue(), PREFERRED_DEPENDENCY_PREDICATE,
-        ImmutableSet.<Class<?>>of(), null, null, ImmutableSet.<Class<?>>of(), false, true,
+        ImmutableSet.<Class<?>>of(), null, NO_EXTERNAL_BINDINGS, null, ImmutableSet.<Class<?>>of(),
+        MissingFragmentPolicy.FAIL_ANALYSIS, true,
         attr("visibility", LABEL_LIST).legacyAllowAnyFileType().build());
     Map<String, Object> attributeValues = new HashMap<>();
     attributeValues.put("visibility", Arrays.asList("//visibility:legacy_public"));
@@ -308,12 +307,12 @@ public class RuleClassTest extends PackageLoadingTestCase {
     // Test attribute access:
     AttributeMap attributes = RawAttributeMapper.of(rule);
     assertEquals("//default:label",
-                 attributes.get("my-label-attr", Type.LABEL).toString());
+                 attributes.get("my-label-attr", BuildType.LABEL).toString());
     assertEquals(42,
                  attributes.get("my-integer-attr", Type.INTEGER).intValue());
     assertEquals("",  // missing attribute -> default chosen based on type
                  attributes.get("my-string-attr", Type.STRING));
-    assertThat(attributes.get("my-labellist-attr", Type.LABEL_LIST)).isEmpty();
+    assertThat(attributes.get("my-labellist-attr", BuildType.LABEL_LIST)).isEmpty();
     assertEquals(Arrays.asList("foo", "bar"),
                  attributes.get("my-stringlist-attr", Type.STRING_LIST));
     try {
@@ -332,8 +331,8 @@ public class RuleClassTest extends PackageLoadingTestCase {
                                               "stuff-%{outs}-bar"),
         RuleClass.NO_CHANGE, DUMMY_CONFIGURED_TARGET_FACTORY,
         PredicatesWithMessage.<Rule>alwaysTrue(), PREFERRED_DEPENDENCY_PREDICATE,
-        ImmutableSet.<Class<?>>of(), null, null, ImmutableSet.<Class<?>>of(), false, true,
-        attr("outs", OUTPUT_LIST).build());
+        ImmutableSet.<Class<?>>of(), null, NO_EXTERNAL_BINDINGS, null, ImmutableSet.<Class<?>>of(),
+        MissingFragmentPolicy.FAIL_ANALYSIS, true, attr("outs", OUTPUT_LIST).build());
 
     Map<String, Object> attributeValues = new HashMap<>();
     attributeValues.put("outs", Collections.singletonList("explicit_out"));
@@ -353,8 +352,8 @@ public class RuleClassTest extends PackageLoadingTestCase {
     RuleClass ruleClass = new RuleClass("ruleClass", false, false, false, false, false, false,
         ImplicitOutputsFunction.fromTemplates("%{dirname}lib%{basename}.bar"), RuleClass.NO_CHANGE,
         DUMMY_CONFIGURED_TARGET_FACTORY, PredicatesWithMessage.<Rule>alwaysTrue(),
-        PREFERRED_DEPENDENCY_PREDICATE, ImmutableSet.<Class<?>>of(), null, null,
-        ImmutableSet.<Class<?>>of(), false, true);
+        PREFERRED_DEPENDENCY_PREDICATE, ImmutableSet.<Class<?>>of(), null, NO_EXTERNAL_BINDINGS,
+        null, ImmutableSet.<Class<?>>of(), MissingFragmentPolicy.FAIL_ANALYSIS, true);
 
     Rule rule = createRule(ruleClass, "myRule", Collections.<String, Object>emptyMap(),
         testRuleLocation);
@@ -374,8 +373,8 @@ public class RuleClassTest extends PackageLoadingTestCase {
     return new RuleClass("ruleClass", false, false, false, false, false, false,
         ImplicitOutputsFunction.fromTemplates("empty"), RuleClass.NO_CHANGE,
         DUMMY_CONFIGURED_TARGET_FACTORY, PredicatesWithMessage.<Rule>alwaysTrue(),
-        PREFERRED_DEPENDENCY_PREDICATE, ImmutableSet.<Class<?>>of(), null, null,
-        ImmutableSet.<Class<?>>of(), false, true,
+        PREFERRED_DEPENDENCY_PREDICATE, ImmutableSet.<Class<?>>of(), null, NO_EXTERNAL_BINDINGS,
+        null, ImmutableSet.<Class<?>>of(), MissingFragmentPolicy.FAIL_ANALYSIS, true,
         attr("condition", BOOLEAN).value(false).build(),
         attr("declared1", BOOLEAN).value(false).build(),
         attr("declared2", BOOLEAN).value(false).build(),
@@ -517,8 +516,8 @@ public class RuleClassTest extends PackageLoadingTestCase {
         ImplicitOutputsFunction.fromTemplates("first-%{name}", "second-%{name}", "out-%{outs}"),
         RuleClass.NO_CHANGE, DUMMY_CONFIGURED_TARGET_FACTORY,
         PredicatesWithMessage.<Rule>alwaysTrue(), PREFERRED_DEPENDENCY_PREDICATE,
-        ImmutableSet.<Class<?>>of(), null, null, ImmutableSet.<Class<?>>of(), false, true,
-        attr("outs", OUTPUT_LIST).build());
+        ImmutableSet.<Class<?>>of(), null, NO_EXTERNAL_BINDINGS, null, ImmutableSet.<Class<?>>of(),
+        MissingFragmentPolicy.FAIL_ANALYSIS, true, attr("outs", OUTPUT_LIST).build());
 
     Map<String, Object> attributeValues = new HashMap<>();
     attributeValues.put("outs", ImmutableList.of("third", "fourth"));
@@ -540,7 +539,8 @@ public class RuleClassTest extends PackageLoadingTestCase {
     RuleClass ruleClass = new RuleClass("ruleA", false, false, false, false, false, false,
         ImplicitOutputsFunction.NONE, RuleClass.NO_CHANGE, DUMMY_CONFIGURED_TARGET_FACTORY,
         PredicatesWithMessage.<Rule>alwaysTrue(), PREFERRED_DEPENDENCY_PREDICATE,
-        ImmutableSet.<Class<?>>of(), null, null, ImmutableSet.<Class<?>>of(), false, true,
+        ImmutableSet.<Class<?>>of(), null, NO_EXTERNAL_BINDINGS, null, ImmutableSet.<Class<?>>of(),
+        MissingFragmentPolicy.FAIL_ANALYSIS, true,
         attr("a", STRING_LIST).mandatory().build(),
         attr("b", STRING_LIST).mandatory().build(),
         attr("c", STRING_LIST).mandatory().build(),
@@ -625,8 +625,8 @@ public class RuleClassTest extends PackageLoadingTestCase {
         "ruleMNE", false, false, false, false, false, false,
         ImplicitOutputsFunction.NONE, RuleClass.NO_CHANGE, DUMMY_CONFIGURED_TARGET_FACTORY,
         PredicatesWithMessage.<Rule>alwaysTrue(), PREFERRED_DEPENDENCY_PREDICATE,
-        ImmutableSet.<Class<?>>of(), null, null, ImmutableSet.<Class<?>>of(), false, true,
-        attributes);
+        ImmutableSet.<Class<?>>of(), null, NO_EXTERNAL_BINDINGS, null, ImmutableSet.<Class<?>>of(),
+        MissingFragmentPolicy.FAIL_ANALYSIS, true, attributes);
     return mandNonEmptyRuleClass;
   }
 
@@ -636,8 +636,9 @@ public class RuleClassTest extends PackageLoadingTestCase {
         "ruleMNE", false, false, false, false, false, false,
         ImplicitOutputsFunction.NONE, RuleClass.NO_CHANGE, DUMMY_CONFIGURED_TARGET_FACTORY,
         PredicatesWithMessage.<Rule>alwaysTrue(), PREFERRED_DEPENDENCY_PREDICATE,
-        ImmutableSet.<Class<?>>of(), null, null, ImmutableSet.<Class<?>>of(), false, true,
-        attr("list", LABEL_LIST).nonEmpty().legacyAllowAnyFileType().value(emptyList).build());
+        ImmutableSet.<Class<?>>of(), null, NO_EXTERNAL_BINDINGS, null, ImmutableSet.<Class<?>>of(),
+        MissingFragmentPolicy.FAIL_ANALYSIS, true, attr("list", LABEL_LIST)
+        .nonEmpty().legacyAllowAnyFileType().value(emptyList).build());
 
     Map<String, Object> attributeValues = new LinkedHashMap<>();
     reporter.removeHandler(failFastHandler);
@@ -650,12 +651,12 @@ public class RuleClassTest extends PackageLoadingTestCase {
   }
 
   private Rule createRule(RuleClass ruleClass, String name, Map<String, Object> attributeValues,
-      Location location) throws SyntaxException {
+      Location location) throws LabelSyntaxException, InterruptedException {
     Package.Builder pkgBuilder = createDummyPackageBuilder();
     Label ruleLabel;
     try {
       ruleLabel = pkgBuilder.createLabel(name);
-    } catch (Label.SyntaxException e) {
+    } catch (LabelSyntaxException e) {
       throw new IllegalArgumentException("Rule has illegal label");
     }
     return ruleClass.createRuleWithLabel(pkgBuilder, ruleLabel, attributeValues,
@@ -711,9 +712,9 @@ public class RuleClassTest extends PackageLoadingTestCase {
   public void testRequiredFragmentInheritance() throws Exception {
     RuleClass parentRuleClass = createParentRuleClass();
     RuleClass childRuleClass = createChildRuleClass(parentRuleClass);
-    assertThat(parentRuleClass.getRequiredConfigurationFragments())
+    assertThat(parentRuleClass.getConfigurationFragmentPolicy().getRequiredConfigurationFragments())
         .containsExactly(DummyFragment.class);
-    assertThat(childRuleClass.getRequiredConfigurationFragments())
+    assertThat(childRuleClass.getConfigurationFragmentPolicy().getRequiredConfigurationFragments())
         .containsExactly(DummyFragment.class);
   }
 
@@ -721,8 +722,9 @@ public class RuleClassTest extends PackageLoadingTestCase {
     RuleClass parentRuleClass = new RuleClass("parent_rule", false, false, false, false, false,
         false, ImplicitOutputsFunction.NONE, RuleClass.NO_CHANGE, DUMMY_CONFIGURED_TARGET_FACTORY,
         PredicatesWithMessage.<Rule>alwaysTrue(), PREFERRED_DEPENDENCY_PREDICATE,
-        ImmutableSet.<Class<?>>of(), null, null, ImmutableSet.<Class<?>>of(DummyFragment.class),
-        false, true, attr("attr", STRING).build());
+        ImmutableSet.<Class<?>>of(), null, NO_EXTERNAL_BINDINGS, null,
+        ImmutableSet.<Class<?>>of(DummyFragment.class), MissingFragmentPolicy.FAIL_ANALYSIS, true,
+        attr("attr", STRING).build());
     return parentRuleClass;
   }
 
@@ -815,7 +817,7 @@ public class RuleClassTest extends PackageLoadingTestCase {
 
   public void testBadRuleClassNames() {
     expectError(RuleClassType.NORMAL, "8abc");
-    expectError(RuleClassType.NORMAL, "_abc");
+    expectError(RuleClassType.NORMAL, "!abc");
     expectError(RuleClassType.NORMAL, "a b");
   }
 

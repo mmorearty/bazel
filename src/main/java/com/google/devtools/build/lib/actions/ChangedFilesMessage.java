@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,8 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.Set;
 
 /**
- * A message sent conveying a set of changed files.
+ * A message sent conveying a set of changed files. This is sent over the event bus if a build is
+ * discovered to have few changed files. If many files have changed, it will not be sent at all.
  */
 public class ChangedFilesMessage {
 

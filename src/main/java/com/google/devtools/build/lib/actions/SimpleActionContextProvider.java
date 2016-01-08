@@ -1,4 +1,4 @@
-// Copyright 2015 Google Inc. All rights reserved.
+// Copyright 2015 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import java.util.List;
 /**
  * An {@link ActionContextProvider} that just provides the {@link ActionContext}s it's given.
  */
-public class SimpleActionContextProvider implements ActionContextProvider {
+public class SimpleActionContextProvider extends ActionContextProvider {
 
   /**
    * Creates an immutable list containing a single SimpleActionContextProvider with the given
@@ -41,15 +41,4 @@ public class SimpleActionContextProvider implements ActionContextProvider {
   public Iterable<ActionContext> getActionContexts() {
     return actionContexts;
   }
-
-  @Override
-  public void executorCreated(Iterable<ActionContext> usedContexts) {}
-
-  @Override
-  public void executionPhaseStarting(ActionInputFileCache actionInputFileCache,
-      ActionGraph actionGraph, Iterable<Artifact> topLevelArtifacts) {}
-
-  @Override
-  public void executionPhaseEnding() {}
-
 }

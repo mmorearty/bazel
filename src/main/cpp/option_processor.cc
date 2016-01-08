@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -262,7 +262,8 @@ blaze_exit_code::ExitCode OptionProcessor::ParseOptions(
       blazerc = GetUnaryOption(arg_chr, next_arg_chr, "--bazelrc");
     }
     if (use_master_blazerc &&
-        GetNullaryOption(arg_chr, "--nomaster_blazerc")) {
+        (GetNullaryOption(arg_chr, "--nomaster_blazerc") ||
+            GetNullaryOption(arg_chr, "--nomaster_bazelrc"))) {
       use_master_blazerc = false;
     }
   }
@@ -431,7 +432,8 @@ void OptionProcessor::AddRcfileArgsAndOptions(bool batch, const string& cwd) {
   // Push the options mapping .blazerc numbers to filenames.
   for (int i_blazerc = 0; i_blazerc < blazercs_.size(); i_blazerc++) {
     const RcFile* blazerc = blazercs_[i_blazerc];
-    command_arguments_.push_back("--rc_source=" + blazerc->Filename());
+    command_arguments_.push_back("--rc_source=" +
+                                 blaze::ConvertPath(blazerc->Filename()));
   }
 
   // Push the option defaults
@@ -445,16 +447,16 @@ void OptionProcessor::AddRcfileArgsAndOptions(bool batch, const string& cwd) {
     for (int ii = 0; ii < it->second.size(); ii++) {
       const RcOption& rcoption = it->second[ii];
       command_arguments_.push_back(
-          "--default_override=" + std::to_string(rcoption.rcfile_index()) + ":"
+          "--default_override=" + ToString(rcoption.rcfile_index()) + ":"
           + it->first + "=" + rcoption.option());
     }
   }
 
   // Splice the terminal options.
   command_arguments_.push_back(
-      "--isatty=" + std::to_string(IsStandardTerminal()));
+      "--isatty=" + ToString(IsStandardTerminal()));
   command_arguments_.push_back(
-      "--terminal_columns=" + std::to_string(GetTerminalColumns()));
+      "--terminal_columns=" + ToString(GetTerminalColumns()));
 
   // Pass the client environment to the server in server mode.
   if (batch) {
@@ -464,7 +466,7 @@ void OptionProcessor::AddRcfileArgsAndOptions(bool batch, const string& cwd) {
       command_arguments_.push_back("--client_env=" + string(*env));
     }
   }
-  command_arguments_.push_back("--client_cwd=" + cwd);
+  command_arguments_.push_back("--client_cwd=" + blaze::ConvertPath(cwd));
 
   const char *emacs = getenv("EMACS");
   if (emacs != NULL && strcmp(emacs, "t") == 0) {

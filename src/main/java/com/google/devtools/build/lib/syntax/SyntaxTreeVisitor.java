@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -40,6 +40,10 @@ public class SyntaxTreeVisitor {
     visit(node.getValue());
   }
 
+  public void visit(@SuppressWarnings("unused") Parameter<?, ?> node) {
+    // leaf node (we need the function for overrides)
+  }
+
   public void visit(BuildFileAST node) {
     visitAll(node.getStatements());
     visitAll(node.getComments());
@@ -51,42 +55,50 @@ public class SyntaxTreeVisitor {
   }
 
   public void visit(FuncallExpression node) {
+    if (node.getObject() != null) {
+      visit(node.getObject());
+    }
     visit(node.getFunction());
     visitAll(node.getArguments());
   }
 
-  public void visit(Ident node) {
-  }
+  public void visit(@SuppressWarnings("unused") Identifier node) {}
 
-  public void visit(ListComprehension node) {
-    visit(node.getElementExpression());
+  public void visit(AbstractComprehension node) {
+    visitAll(node.getOutputExpressions());
+
     for (ListComprehension.Clause clause : node.getClauses()) {
       if (clause.getLValue() != null) {
-        visit(clause.getLValue().getExpression());
+        visit(clause.getLValue());
       }
       visit(clause.getExpression());
     }
   }
 
-  public void accept(DictComprehension node) {
-    visit(node.getKeyExpression());
-    visit(node.getValueExpression());
-    visit(node.getLoopVar().getExpression());
-    visit(node.getListExpression());
+  public void visit(ForStatement node) {
+    visit(node.getVariable().getExpression());
+    visit(node.getCollection());
+    visitAll(node.block());
+  }
+
+  public void visit(LoadStatement node) {
+    visitAll(node.getSymbols());
   }
 
   public void visit(ListLiteral node) {
     visitAll(node.getElements());
   }
 
-  public void visit(IntegerLiteral node) {
-  }
+  public void visit(@SuppressWarnings("unused") IntegerLiteral node) {}
 
-  public void visit(StringLiteral node) {
+  public void visit(@SuppressWarnings("unused") StringLiteral node) {}
+
+  public void visit(LValue node) {
+    visit(node.getExpression());
   }
 
   public void visit(AssignmentStatement node) {
-    visit(node.getLValue().getExpression());
+    visit(node.getLValue());
     visit(node.getExpression());
   }
 
@@ -95,38 +107,27 @@ public class SyntaxTreeVisitor {
   }
 
   public void visit(IfStatement node) {
-    for (ConditionalStatements stmt : node.getThenBlocks()) {
-      visit(stmt);
-    }
-    for (Statement stmt : node.getElseBlock()) {
-      visit(stmt);
-    }
+    visitAll(node.getThenBlocks());
+    visitAll(node.getElseBlock());
   }
 
   public void visit(ConditionalStatements node) {
     visit(node.getCondition());
-    for (Statement stmt : node.getStmts()) {
-      visit(stmt);
-    }
+    visitAll(node.getStmts());
   }
 
   public void visit(FunctionDefStatement node) {
     visit(node.getIdent());
-    List<Expression> defaults = node.getArgs().getDefaultValues();
-    if (defaults != null) {
-      for (Expression expr : defaults) {
-        visit(expr);
-      }
-    }
-    for (Statement stmt : node.getStatements()) {
-      visit(stmt);
-    }
+    visitAll(node.getParameters());
+    visitAll(node.getStatements());
+  }
+
+  public void visit(ReturnStatement node) {
+    visit(node.getReturnExpression());
   }
 
   public void visit(DictionaryLiteral node) {
-    for (DictionaryEntryLiteral entry : node.getEntries()) {
-      visit(entry);
-    }
+    visitAll(node.getEntries());
   }
 
   public void visit(DictionaryEntryLiteral node) {
@@ -138,8 +139,12 @@ public class SyntaxTreeVisitor {
     visit(node.getExpression());
   }
 
-  public void visit(Comment node) {
+  public void visit(DotExpression node) {
+    visit(node.getObj());
+    visit(node.getField());
   }
+
+  public void visit(@SuppressWarnings("unused") Comment node) {}
 
   public void visit(ConditionalExpression node) {
     visit(node.getThenCase());

@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,12 +24,14 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.google.common.escape.Escaper;
 import com.google.common.escape.Escapers;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.Location;
 import com.google.devtools.build.lib.syntax.ClassObject;
 import com.google.devtools.build.lib.syntax.ClassObject.SkylarkClassObject;
 import com.google.devtools.build.lib.syntax.EvalException;
-import com.google.devtools.build.lib.syntax.Label;
+import com.google.devtools.build.lib.syntax.Runtime;
 import com.google.devtools.build.lib.syntax.SkylarkCallbackFunction;
+import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.StringUtil;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.PathFragment;
@@ -58,10 +60,11 @@ public abstract class ImplicitOutputsFunction {
   public abstract static class SkylarkImplicitOutputsFunction extends ImplicitOutputsFunction {
 
     public abstract ImmutableMap<String, String> calculateOutputs(AttributeMap map)
-        throws EvalException;
+        throws EvalException, InterruptedException;
 
     @Override
-    public Iterable<String> getImplicitOutputs(AttributeMap map) throws EvalException {
+    public Iterable<String> getImplicitOutputs(AttributeMap map)
+        throws EvalException, InterruptedException {
       return calculateOutputs(map).values();
     }
   }
@@ -82,19 +85,20 @@ public abstract class ImplicitOutputsFunction {
     }
 
     @Override
-    public ImmutableMap<String, String> calculateOutputs(AttributeMap map) throws EvalException {
+    public ImmutableMap<String, String> calculateOutputs(AttributeMap map)
+        throws EvalException, InterruptedException {
       Map<String, Object> attrValues = new HashMap<>();
       for (String attrName : map.getAttributeNames()) {
-        // TODO(bazel-team): support configurable attributes - which value would we want to
-        // pass on to the child outputs function? Maybe implicit output functions shouldn't
-        // have access to configurable values (makes them too complicated?). Maybe they
-        // should have *full* access (gives them the most power?).
-        Object value = map.get(attrName, map.getAttributeType(attrName));
-        if (value != null) {
-          attrValues.put(attrName, value);
+        Type<?> attrType = map.getAttributeType(attrName);
+        // Don't include configurable attributes: we don't know which value they might take
+        // since we don't yet have a build configuration.
+        if (!map.isConfigurable(attrName, attrType)) {
+          Object value = map.get(attrName, attrType);
+          attrValues.put(attrName, value == null ? Runtime.NONE : value);
         }
       }
-      ClassObject attrs = new SkylarkClassObject(attrValues, "No such attribute '%s'");
+      ClassObject attrs = new SkylarkClassObject(attrValues, "Attribute '%s' either doesn't exist "
+          + "or uses a select() (i.e. could have multiple values)");
       try {
         ImmutableMap.Builder<String, String> builder = ImmutableMap.builder();
         for (Map.Entry<String, String> entry : castMap(callback.call(attrs),
@@ -174,7 +178,8 @@ public abstract class ImplicitOutputsFunction {
    * Given a newly-constructed Rule instance (with attributes populated),
    * returns the list of output files that this rule produces implicitly.
    */
-  public abstract Iterable<String> getImplicitOutputs(AttributeMap rule) throws EvalException;
+  public abstract Iterable<String> getImplicitOutputs(AttributeMap rule)
+      throws EvalException, InterruptedException;
 
   /**
    * The implicit output function that returns no files.
@@ -291,28 +296,28 @@ public abstract class ImplicitOutputsFunction {
       return singleton(rule.get(attrName, Type.STRING));
     } else if (Type.STRING_LIST == attrType) {
       return Sets.newLinkedHashSet(rule.get(attrName, Type.STRING_LIST));
-    } else if (Type.LABEL == attrType) {
+    } else if (BuildType.LABEL == attrType) {
       // Labels are most often used to change the extension,
       // e.g. %.foo -> %.java, so we return the basename w/o extension.
-      Label label = rule.get(attrName, Type.LABEL);
+      Label label = rule.get(attrName, BuildType.LABEL);
       return singleton(FileSystemUtils.removeExtension(label.getName()));
-    } else if (Type.LABEL_LIST == attrType) {
+    } else if (BuildType.LABEL_LIST == attrType) {
       // Labels are most often used to change the extension,
       // e.g. %.foo -> %.java, so we return the basename w/o extension.
       return Sets.newLinkedHashSet(
-          Iterables.transform(rule.get(attrName, Type.LABEL_LIST),
+          Iterables.transform(rule.get(attrName, BuildType.LABEL_LIST),
               new Function<Label, String>() {
                 @Override
                 public String apply(Label label) {
                   return FileSystemUtils.removeExtension(label.getName());
                 }
               }));
-    } else if (Type.OUTPUT == attrType) {
-      Label out = rule.get(attrName, Type.OUTPUT);
+    } else if (BuildType.OUTPUT == attrType) {
+      Label out = rule.get(attrName, BuildType.OUTPUT);
       return singleton(out.getName());
-    } else if (Type.OUTPUT_LIST == attrType) {
+    } else if (BuildType.OUTPUT_LIST == attrType) {
       return Sets.newLinkedHashSet(
-          Iterables.transform(rule.get(attrName, Type.OUTPUT_LIST),
+          Iterables.transform(rule.get(attrName, BuildType.OUTPUT_LIST),
               new Function<Label, String>() {
                 @Override
                 public String apply(Label label) {

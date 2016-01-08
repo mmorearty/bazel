@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -247,7 +247,7 @@ public class ActionMetadataHandler implements MetadataHandler {
           String digestString = (digest != null) ? base16.encode(digest) : "null";
           String fileDigestString = (fileDigest != null) ? base16.encode(fileDigest) : "null";
           throw new IllegalStateException("Expected digest " + digestString + " for artifact "
-              + artifact + ", but got " + fileDigestString);
+              + artifact + ", but got " + fileDigestString + " (" + fileValue + ")");
         }
         outputArtifactData.put(artifact, fileValue);
       } catch (IOException e) {

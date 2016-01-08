@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,11 +13,11 @@
 // limitations under the License.
 package com.google.devtools.build.lib.util;
 
+import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
 import com.google.common.collect.Sets;
-import com.google.devtools.build.lib.testutil.MoreAsserts;
 import com.google.devtools.build.lib.testutil.Scratch;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
@@ -27,6 +27,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
+import java.io.IOException;
+import java.nio.charset.Charset;
 import java.util.Collection;
 
 @RunWith(JUnit4.class)
@@ -48,8 +50,7 @@ public class DependencySetTest {
         " " + file1 + " \\",
         " " + file2 + " ");
     DependencySet depset = newDependencySet().read(dotd);
-    MoreAsserts.assertSameContents(Sets.newHashSet(file1, file2),
-                       depset.getDependencies());
+    assertThat(depset.getDependencies()).containsExactlyElementsIn(Sets.newHashSet(file1, file2));
     assertEquals(depset.getOutputFileName(), filename);
   }
 
@@ -63,8 +64,7 @@ public class DependencySetTest {
         " " + file1 + " \\\r",
         " " + file2 + " ");
     DependencySet depset = newDependencySet().read(dotd);
-    MoreAsserts.assertSameContents(Sets.newHashSet(file1, file2),
-                       depset.getDependencies());
+    assertThat(depset.getDependencies()).containsExactlyElementsIn(Sets.newHashSet(file1, file2));
     assertEquals(depset.getOutputFileName(), filename);
   }
 
@@ -78,8 +78,7 @@ public class DependencySetTest {
         + " " + file1 + " \\\r"
         + " " + file2 + " ");
     DependencySet depset = newDependencySet().read(dotd);
-    MoreAsserts.assertSameContents(Sets.newHashSet(file1, file2),
-                       depset.getDependencies());
+    assertThat(depset.getDependencies()).containsExactlyElementsIn(Sets.newHashSet(file1, file2));
     assertEquals(depset.getOutputFileName(), filename);
   }
 
@@ -93,8 +92,7 @@ public class DependencySetTest {
         + " " + file1 + " \\\r\n"
         + " " + file2 + " ");
     DependencySet depset = newDependencySet().read(dotd);
-    MoreAsserts.assertSameContents(Sets.newHashSet(file1, file2),
-                       depset.getDependencies());
+    assertThat(depset.getDependencies()).containsExactlyElementsIn(Sets.newHashSet(file1, file2));
     assertEquals(depset.getOutputFileName(), filename);
   }
 
@@ -110,8 +108,8 @@ public class DependencySetTest {
         " " + file2 + "\\",
         " " + file3 + " " + file4);
     DependencySet depset = newDependencySet().read(dotd);
-    MoreAsserts.assertSameContents(Sets.newHashSet(file1, file2, file3, file4),
-                       depset.getDependencies());
+    assertThat(depset.getDependencies())
+        .containsExactlyElementsIn(Sets.newHashSet(file1, file2, file3, file4));
     assertEquals(depset.getOutputFileName(), filename);
   }
 
@@ -125,8 +123,7 @@ public class DependencySetTest {
         " " + file1 + " \\",
         " " + file2 + " ");
     DependencySet depset = newDependencySet().read(dotd);
-    MoreAsserts.assertSameContents(Sets.newHashSet(file1, file2),
-                       depset.getDependencies());
+    assertThat(depset.getDependencies()).containsExactlyElementsIn(Sets.newHashSet(file1, file2));
     assertEquals(depset.getOutputFileName(), filename);
   }
 
@@ -150,8 +147,8 @@ public class DependencySetTest {
         " " + file1,
         "hello2.o: \\",
         " " + file2);
-    MoreAsserts.assertSameContents(Sets.newHashSet(file1, file2),
-        newDependencySet().read(dotd).getDependencies());
+    assertThat(newDependencySet().read(dotd).getDependencies())
+        .containsExactlyElementsIn(Sets.newHashSet(file1, file2));
   }
 
   /*
@@ -173,8 +170,22 @@ public class DependencySetTest {
         "hello.o: \\",
         " " + file1 + " \\",
         " " + file3 + " ");
-    MoreAsserts.assertSameContents(Sets.newHashSet(file1, file2, file3),
-                       newDependencySet().read(dotd).getDependencies());
+    assertThat(newDependencySet().read(dotd).getDependencies())
+        .containsExactly(file1, file1, file2, file3);
+  }
+
+  @Test
+  public void dotDParser_errorOnNoTrailingNewline() throws Exception {
+    PathFragment file1 = new PathFragment("/usr/local/blah/blah/genhello/hello.cc");
+    Path dotd = scratch.file("/tmp/foo.d");
+    FileSystemUtils.writeContent(
+        dotd, ("hello.o: \\\n " + file1).getBytes(Charset.forName("UTF-8")));
+    try {
+      newDependencySet().read(dotd);
+      fail();
+    } catch (IOException e) {
+      assertThat(e.getMessage()).contains("File does not end in a newline");
+    }
   }
 
   @Test
@@ -189,7 +200,7 @@ public class DependencySetTest {
     depSet1.addDependency(file2);
     depSet1.addDependency(file3);
     depSet1.setOutputFileName(filename);
-    
+
     Path outfile = scratch.resolve(filename);
     Path dotd = scratch.resolve("/usr/local/blah/blah/genhello/hello.d");
     FileSystemUtils.createDirectoryAndParents(dotd.getParentDirectory());
@@ -220,7 +231,7 @@ public class DependencySetTest {
     Path dotd = scratch.resolve(filename);
     FileSystemUtils.createDirectoryAndParents(dotd.getParentDirectory());
     depSet1.write(dotd, ".d");
-    
+
     DependencySet depSet2 = newDependencySet().read(dotd);
     assertEquals(depSet1, depSet2);
     // due to how pic.d files are written, absolute paths are changed into relatives

@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 
 import java.io.Serializable;
+import java.util.Objects;
 
 /**
  * A Location is a range of characters within a file.
@@ -51,6 +52,22 @@ public abstract class Location implements Serializable {
     @Override
     public LineAndColumn getStartLineAndColumn() {
       return startLineAndColumn;
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(path, startLineAndColumn, internalHashCode());
+    }
+
+    @Override
+    public boolean equals(Object other) {
+      if (other == null || !other.getClass().equals(getClass())) {
+        return false;
+      }
+      LocationWithPathAndStartColumn that = (LocationWithPathAndStartColumn) other;
+      return internalEquals(that)
+          && Objects.equals(this.path, that.path)
+          && Objects.equals(this.startLineAndColumn, that.startLineAndColumn);
     }
   }
 
@@ -129,6 +146,18 @@ public abstract class Location implements Serializable {
    */
   public LineAndColumn getStartLineAndColumn() {
     return null;
+  }
+
+  /**
+   * Returns a line corresponding to the position denoted by getStartOffset.
+   * Returns null if this information is not available.
+   */
+  public Integer getStartLine() {
+    LineAndColumn lac = getStartLineAndColumn();
+    if (lac == null) {
+      return null;
+    }
+    return lac.getLine();
   }
 
   /**
@@ -212,6 +241,14 @@ public abstract class Location implements Serializable {
     return print();
   }
 
+  protected int internalHashCode() {
+    return Objects.hash(startOffset, endOffset);
+  }
+
+  protected boolean internalEquals(Location that) {
+    return this.startOffset == that.startOffset && this.endOffset == that.endOffset;
+  }
+
   /**
    * A value class that describes the line and column of an offset in a file.
    */
@@ -247,7 +284,49 @@ public abstract class Location implements Serializable {
 
     @Override
     public int hashCode() {
-      return line * 81 + column;
+      return line * 41 + column;
     }
+  }
+
+  /**
+   * Dummy location for built-in functions which ensures that stack traces contain "nice" location
+   * strings.
+   */
+  public static final Location BUILTIN = new Location(0, 0) {
+    @Override
+    public String toString() {
+      return "Built-In";
+    }
+
+    @Override
+    public PathFragment getPath() {
+      return null;
+    }
+  };
+
+  /**
+   * Returns the location in the format "filename:line".
+   *
+   * <p>If such a location is not defined, this method returns an empty string.
+   */
+  public static String printPathAndLine(Location location) {
+    return (location == null) ? "" : location.printPathAndLine();
+  }
+
+  /**
+   * Returns this location in the format "filename:line".
+   */
+  public String printPathAndLine() {
+    StringBuilder builder = new StringBuilder();
+    PathFragment path = getPath();
+    if (path != null) {
+      builder.append(path.getPathString());
+    }
+
+    LineAndColumn position = getStartLineAndColumn();
+    if (position != null) {
+      builder.append(":").append(position.getLine());
+    }
+    return builder.toString();
   }
 }

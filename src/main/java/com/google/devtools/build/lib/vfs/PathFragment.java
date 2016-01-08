@@ -1,4 +1,4 @@
-// Copyright 2014 Google Inc. All rights reserved.
+// Copyright 2014 The Bazel Authors. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ package com.google.devtools.build.lib.vfs;
 import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
@@ -79,6 +80,15 @@ public final class PathFragment implements Comparable<PathFragment>, Serializabl
           return path.getSafePathString();
         }
       };
+
+  /** Lower-level API. Create a PathFragment, interning segments. */
+  public static PathFragment create(char driveLetter, boolean isAbsolute, String[] segments) {
+    String[] internedSegments = new String[segments.length];
+    for (int i = 0; i < segments.length; i++) {
+      internedSegments[i] = StringCanonicalizer.intern(segments[i]);
+    }
+    return new PathFragment(driveLetter, isAbsolute, segments);
+  }
 
   // We have 3 word-sized fields (segments, hashCode and path), and 2
   // byte-sized ones, which fits in 16 bytes. Object sizes are rounded
@@ -175,8 +185,7 @@ public final class PathFragment implements Comparable<PathFragment>, Serializabl
    * @param offset how many characters from the start of the string to ignore.
    */
   private static String[] segment(String toSegment, int offset) {
-    char[] chars = toSegment.toCharArray();
-    int length = chars.length;
+    int length = toSegment.length();
 
     // Handle "/" and "" quickly.
     if (length == offset) {
@@ -188,7 +197,7 @@ public final class PathFragment implements Comparable<PathFragment>, Serializabl
     int seg = 0;
     int start = offset;
     for (int i = offset; i < length; i++) {
-      if (isSeparator(chars[i])) {
+      if (isSeparator(toSegment.charAt(i))) {
         if (i > start) {  // to skip repeated separators
           seg++;
         }
@@ -202,20 +211,16 @@ public final class PathFragment implements Comparable<PathFragment>, Serializabl
     seg = 0;
     start = offset;
     for (int i = offset; i < length; i++) {
-      if (isSeparator(chars[i])) {
+      if (isSeparator(toSegment.charAt(i))) {
         if (i > start) {  // to skip repeated separators
-          // Make a copy of the String here to allow the interning to save memory. String.substring
-          // does not make a copy, but refers to the original char array, preventing garbage
-          // collection of the parts that are unnecessary.
-          result[seg] = StringCanonicalizer.intern(new String(chars, start,  i - start));
+          result[seg] = StringCanonicalizer.intern(toSegment.substring(start,  i));
           seg++;
         }
         start = i + 1;
       }
     }
     if (start < length) {
-      result[seg] = StringCanonicalizer.intern(new String(chars, start, length - start));
-      seg++;
+      result[seg] = StringCanonicalizer.intern(toSegment.substring(start, length));
     }
     return result;
   }
@@ -260,6 +265,34 @@ public final class PathFragment implements Comparable<PathFragment>, Serializabl
    */
   public static Iterable<String> safePathStrings(Iterable<PathFragment> fragments) {
     return Iterables.transform(fragments, TO_SAFE_PATH_STRING);
+  }
+
+  /** Returns the subset of {@code paths} that start with {@code startingWithPath}. */
+  public static ImmutableSet<PathFragment> filterPathsStartingWith(Set<PathFragment> paths,
+      PathFragment startingWithPath) {
+    return ImmutableSet.copyOf(Iterables.filter(paths, startsWithPredicate(startingWithPath)));
+  }
+
+  public static Predicate<PathFragment> startsWithPredicate(final PathFragment prefix) {
+    return new Predicate<PathFragment>() {
+      @Override
+      public boolean apply(PathFragment pathFragment) {
+        return pathFragment.startsWith(prefix);
+      }
+    };
+  }
+
+  /**
+  * Throws {@link IllegalArgumentException} if {@code paths} contains any paths that
+  * are equal to {@code startingWithPath} or that are not beneath {@code startingWithPath}.
+  */
+  public static void checkAllPathsAreUnder(Iterable<PathFragment> paths,
+      PathFragment startingWithPath) {
+    for (PathFragment path : paths) {
+      Preconditions.checkArgument(
+          !path.equals(startingWithPath) && path.startsWith(startingWithPath),
+              "%s is not beneath %s", path, startingWithPath);
+    }
   }
 
   private String joinSegments(char separatorChar) {
@@ -339,13 +372,16 @@ public final class PathFragment implements Comparable<PathFragment>, Serializabl
 
   /**
    * Returns the path formed by appending the relative or absolute path fragment
-   * {@code suffix} to this path.
+   * {@code otherFragment} to this path.
    *
-   * <p>If suffix is absolute, the current path will be ignored; otherwise, they
-   * will be concatenated. This is a purely syntactic operation, with no path
-   * normalization or I/O performed.
+   * <p>If {@code otherFragment} is absolute, the current path will be ignored;
+   * otherwise, they will be concatenated. This is a purely syntactic operation,
+   * with no path normalization or I/O performed.
    */
   public PathFragment getRelative(PathFragment otherFragment) {
+    if (otherFragment == EMPTY_FRAGMENT) {
+      return this;
+    }
     return otherFragment.isAbsolute()
         ? otherFragment
         : new PathFragment(this, otherFragment);
@@ -455,7 +491,7 @@ public final class PathFragment implements Comparable<PathFragment>, Serializabl
    * a prefix of {@code this}, and that they are both relative or both
    * absolute.
    *
-   * This is a reflexive, transitive, anti-symmetric relation (i.e. a partial
+   * <p>This is a reflexive, transitive, anti-symmetric relation (i.e. a partial
    * order)
    */
   public boolean startsWith(PathFragment prefix) {
@@ -476,7 +512,7 @@ public final class PathFragment implements Comparable<PathFragment>, Serializabl
    * Returns true iff {@code suffix}, considered as a list of path segments, is
    * relative and a suffix of {@code this}, or both are absolute and equal.
    *
-   * This is a reflexive, transitive, anti-symmetric relation (i.e. a partial
+   * <p>This is a reflexive, transitive, anti-symmetric relation (i.e. a partial
    * order)
    */
   public boolean endsWith(PathFragment suffix) {
@@ -549,6 +585,11 @@ public final class PathFragment implements Comparable<PathFragment>, Serializabl
     return (driveLetter != '\0') ? driveLetter + ":" : "";
   }
 
+  /** Return the drive letter or '\0' if not applicable. */
+  public char getDriveLetter() {
+    return driveLetter;
+  }
+
   /**
    * Returns the number of segments in this path.
    */
@@ -612,6 +653,22 @@ public final class PathFragment implements Comparable<PathFragment>, Serializabl
 
   @Override
   public int hashCode() {
+    // We use the hash code caching strategy employed by java.lang.String. There are three subtle
+    // things going on here:
+    //
+    // (1) We use a value of 0 to indicate that the hash code hasn't been computed and cached yet.
+    // Yes, this means that if the hash code is really 0 then we will "recompute" it each time. But
+    // this isn't a problem in practice since a hash code of 0 is rare.
+    //
+    // (2) Since we have no synchronization, multiple threads can race here thinking there are the
+    // first one to compute and cache the hash code.
+    //
+    // (3) Moreover, since 'hashCode' is non-volatile, the cached hash code value written from one
+    // thread may not be visible by another.
+    //
+    // All three of these issues are benign from a correctness perspective; in the end we have no
+    // overhead from synchronization, at the cost of potentially computing the hash code more than
+    // once.
     int h = hashCode;
     if (h == 0) {
       h = isAbsolute ? 1 : 0;
