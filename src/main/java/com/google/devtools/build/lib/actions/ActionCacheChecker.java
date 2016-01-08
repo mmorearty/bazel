@@ -106,7 +106,7 @@ public class ActionCacheChecker {
    */
   private boolean validateArtifacts(EventHandler handler, Entry entry, Action action,
       Iterable<Artifact> actionInputs, MetadataHandler metadataHandler, boolean checkOutput) {
-	reportMike("----------------- validateArtifacts " + action.prettyPrint() + " ----------------");
+	reportAsana("----------------- validateArtifacts " + action.prettyPrint() + " ----------------");
 
     Iterable<Artifact> artifacts = checkOutput
         ? Iterables.concat(action.getOutputs(), actionInputs)
@@ -116,22 +116,22 @@ public class ActionCacheChecker {
     for (Artifact artifact : artifacts) {
       i++;
       Metadata m = metadataHandler.getMetadataMaybe(artifact);
-      reportMike("artifact: " + artifact.getExecPathString() + " " + ((m == null) ? 0 : Arrays.hashCode(m.digest)));
+      reportAsana("artifact: " + artifact.getExecPathString() + " " + ((m == null) ? 0 : Arrays.hashCode(m.digest)));
       mdMap.put(artifact.getExecPathString(), m);
     }
     return !Digest.fromMetadata(mdMap).equals(entry.getFileDigest());
   }
 
-  private static BufferedWriter mikeOut = null;
-  private void reportMike(String s) {
+  private static BufferedWriter asanaOut = null;
+  private void reportAsana(String s) {
     try {
-      if (mikeOut == null) {
+      if (asanaOut == null) {
         String home = System.getenv("HOME");
-        FileWriter fstream = new FileWriter(home + "/mike", false);
-        mikeOut = new BufferedWriter(fstream);
+        FileWriter fstream = new FileWriter(home + "/asana-bazel.log", false);
+        asanaOut = new BufferedWriter(fstream);
       }
-      mikeOut.write("Mike says: " + s + "\n");
-      mikeOut.flush();
+      asanaOut.write("[asana] " + s + "\n");
+      asanaOut.flush();
     } catch (IOException e) {
       System.err.println("Error: " + e.getMessage());
     }
